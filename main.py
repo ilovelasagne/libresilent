@@ -6,10 +6,8 @@ import socket
 import base64
 import hashlib
 from cryptography.fernet import Fernet, InvalidToken
-# Removed redundant and potentially incorrect import from cryptography.exceptions
 
 # --- Crypto Utilities ---
-# (Originally in crypto_utils.py)
 
 # A salt is used to make the key derivation process more secure.
 # Both clients MUST use the exact same salt.
@@ -18,10 +16,10 @@ SALT = b'encrypted-irc-salt-v1'
 def derive_key(password: str) -> bytes:
     """
     Derives a secure 32-byte (256-bit) encryption key from a user-provided password.
-
+    
     Args:
         password: The shared secret password.
-
+    
     Returns:
         A 32-byte, base64-encoded key suitable for Fernet (AES-256).
     """
@@ -38,11 +36,11 @@ def derive_key(password: str) -> bytes:
 def encrypt_message(message: str, key: bytes) -> str:
     """
     Encrypts a string message using the derived key.
-
+    
     Args:
         message: The plaintext message to encrypt.
         key: The base64-encoded key from derive_key().
-
+    
     Returns:
         A base64-encoded encrypted token, as a string.
     """
@@ -53,11 +51,11 @@ def encrypt_message(message: str, key: bytes) -> str:
 def decrypt_message(token: str, key: bytes) -> str | None:
     """
     Decrypts an encrypted token back into a string message.
-
+    
     Args:
         token: The base64-encoded encrypted token.
         key: The base64-encoded key from derive_key().
-
+    
     Returns:
         The decrypted plaintext message, or None if decryption fails
         (e.g., wrong key, corrupt message).
@@ -72,7 +70,6 @@ def decrypt_message(token: str, key: bytes) -> str | None:
         return None
 
 # --- IRC Connection Handler ---
-# (Originally in irc_handler.py)
 
 class IRCHandler(threading.Thread):
     """
@@ -86,11 +83,11 @@ class IRCHandler(threading.Thread):
         self.nick = nick
         self.channel = channel
         self.gui_queue = gui_queue  # Queue to send received messages to the GUI
-
+        
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.running = True
         # Set a timeout so the recv call does not block indefinitely
-        self.sock.settimeout(5)
+        self.sock.settimeout(5) 
 
     def run(self):
         """Main thread loop: connect, join, and listen for messages."""
@@ -98,7 +95,7 @@ class IRCHandler(threading.Thread):
             self.sock.connect((self.server, self.port))
             self.send_command(f"NICK {self.nick}")
             self.send_command(f"USER {self.nick} 0 * :{self.nick}")
-
+            
             # We wait for the server to acknowledge us before joining
             while self.running:
                 try:
@@ -107,15 +104,15 @@ class IRCHandler(threading.Thread):
                 except socket.timeout:
                     # If timeout occurs, simply continue the loop to check self.running state
                     continue
-
+                
                 if not data:
                     break
-
+                
                 for line in data.splitlines():
                     if "001" in line: # 001 is the "Welcome" numeric
                         self.gui_queue.put(('SYSTEM_MESSAGE', f"Successfully joined {self.channel} on {self.server}."))
                         self.send_command(f"JOIN {self.channel}")
-
+                    
                     if line.startswith("PING"):
                         self.handle_ping(line)
                     elif "PRIVMSG" in line:
@@ -123,7 +120,7 @@ class IRCHandler(threading.Thread):
                     # Add raw server output for debugging/status (optional)
                     elif not line.startswith(":"):
                         self.gui_queue.put(('SYSTEM_MESSAGE', line))
-
+        
         except Exception as e:
             # Report critical connection errors back to the GUI
             error_message = f"Failed to connect or connection lost: {e}"
@@ -154,7 +151,7 @@ class IRCHandler(threading.Thread):
             # Format: :<sender>!<user>@<host> PRIVMSG <channel> :<message>
             sender = line.split("!")[0][1:]
             message_content = line.split(":", 2)[-1]
-
+            
             # We only care about messages in our channel from other users
             if self.channel in line and sender != self.nick:
                 self.gui_queue.put((sender, message_content))
@@ -174,7 +171,6 @@ class IRCHandler(threading.Thread):
             pass # Socket might already be closed or shut down
 
 # --- GUI Main Application ---
-# (Originally in main_client.py)
 
 class EncryptedIRCClient:
     def __init__(self, root):
@@ -204,9 +200,10 @@ class EncryptedIRCClient:
 
         tk.Label(self.settings_frame, text="Channel:").pack(side=tk.LEFT, padx=5)
         self.channel_entry = tk.Entry(self.settings_frame, width=10)
-        self.channel_entry.insert(0, "#my-secret-channel")
+        # Using a default channel name based on the code's theme
+        self.channel_entry.insert(0, "#libresilent") 
         self.channel_entry.pack(side=tk.LEFT)
-
+        
         # Connect/Disconnect button (will toggle command and text)
         self.connect_button = tk.Button(self.settings_frame, text="Connect", command=self.connect)
         self.connect_button.pack(side=tk.RIGHT, padx=5)
@@ -222,7 +219,7 @@ class EncryptedIRCClient:
         self.message_entry = tk.Entry(self.bottom_frame, state='disabled') # Disabled until connected
         self.message_entry.pack(fill='x', expand=True, side=tk.LEFT, padx=5)
         self.message_entry.bind("<Return>", self.send_message_event)
-
+        
         self.send_button = tk.Button(self.bottom_frame, text="Send", command=self.send_message_event)
         self.send_button.pack(side=tk.RIGHT, padx=5)
 
@@ -232,7 +229,7 @@ class EncryptedIRCClient:
         self.encryption_key = None
         self.channel = None
         self.nick = None
-        self.is_ready_to_send = False
+        self.is_ready_to_send = False 
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.display_message_system("Welcome! Enter server details and press Connect.")
@@ -252,7 +249,7 @@ class EncryptedIRCClient:
         if not all([server, port, self.nick, self.channel]):
             messagebox.showerror("Error", "All fields are required.")
             return
-
+            
         # Prompt for the shared secret key
         password = simpledialog.askstring("Secret Key", "Enter your shared secret password:", show='*')
         if not password:
@@ -261,7 +258,7 @@ class EncryptedIRCClient:
 
         self.encryption_key = derive_key(password)
         self.display_message_system(f"Key derived. Connecting to {server}...")
-
+        
         # Disable settings
         self.server_entry.config(state='disabled')
         self.port_entry.config(state='disabled')
@@ -272,10 +269,10 @@ class EncryptedIRCClient:
         # Start IRC connection
         self.irc_thread = IRCHandler(server, port, self.nick, self.channel, self.gui_queue)
         self.irc_thread.start()
-
+        
         # Start checking the queue for new messages
         self.root.after(100, self.check_queue)
-
+        
     def disconnect(self):
         """Stops the IRC thread and gracefully resets the application."""
         if self.irc_thread:
@@ -290,11 +287,11 @@ class EncryptedIRCClient:
         while not self.gui_queue.empty():
             sender, message = self.gui_queue.get_nowait()
             self.handle_incoming(sender, message)
-
+            
         # Check if the thread has died unexpectedly
         if self.irc_thread and not self.irc_thread.is_alive() and self.is_ready_to_send:
             self.gui_queue.put(('SYSTEM_ERROR', "Connection thread unexpectedly terminated."))
-
+        
         self.root.after(100, self.check_queue) # Poll again after 100ms
 
     def handle_incoming(self, sender, message):
@@ -312,17 +309,17 @@ class EncryptedIRCClient:
                 # Toggle button to Disconnect mode
                 self.connect_button.config(text="Disconnect", bg="salmon", state='normal', command=self.disconnect)
             return
-
+            
         # Note: decrypt_message is defined globally
         decrypted = decrypt_message(message, self.encryption_key)
-
+        
         if decrypted:
             display = f"<{sender}> {decrypted}"
             self.display_message(display)
-
+            
             # NOTIFICATION: Change title to alert user to new message
             self.root.title(f"** NEW MESSAGE ** - {self.original_title}")
-
+            
         else:
             # This could be a normal IRC message, a message from a non-encrypted
             # user, or a corrupt message.
@@ -331,20 +328,20 @@ class EncryptedIRCClient:
     def send_message_event(self, event=None):
         """Handles the 'Send' button click or Enter key press."""
         message = self.message_entry.get()
-
+        
         # Restore title after sending a message (assuming user is now looking)
         if self.root.title().startswith("** NEW MESSAGE **"):
             self.root.title(self.original_title)
-
+            
         # Check if connection is ready before attempting to send
         if message and self.irc_thread and self.encryption_key and self.is_ready_to_send:
             # Encrypt and send (encrypt_message is defined globally)
             encrypted_message = encrypt_message(message, self.encryption_key)
             self.irc_thread.send_privmsg(encrypted_message)
-
+            
             # Display our own message in the chat window
             self.display_message(f"<{self.nick}> {message}")
-
+            
             self.message_entry.delete(0, tk.END)
         elif message and not self.is_ready_to_send:
              self.display_message_system("Please wait for the channel join message before sending.")
@@ -382,10 +379,11 @@ class EncryptedIRCClient:
         self.port_entry.config(state='normal')
         self.nick_entry.config(state='normal')
         self.channel_entry.config(state='normal')
-
+        
         # Reset connect button state and color, set command back to connect
-        self.connect_button.config(text="Connect", state='normal', bg='SystemButtonFace', command=self.connect)
-
+        # Using a fixed light gray to avoid platform-specific TclError
+        self.connect_button.config(text="Connect", state='normal', bg='#E0E0E0', command=self.connect)
+        
         self.irc_thread = None
         self.encryption_key = None
         self.is_ready_to_send = False
