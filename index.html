@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LibreSilent - Encrypted IRC Client</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: Arial, sans-serif;
+            background: #2c3e50;
+            color: #ecf0f1;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            max-width: 1400px;
+            width: 100%;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .settings-panel {
+            background: #34495e;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .settings-group {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        label {
+            font-size: 14px;
+            font-weight: bold;
+        }
+
+        input[type="text"], input[type="number"] {
+            padding: 8px;
+            border: none;
+            border-radius: 4px;
+            background: #ecf0f1;
+            color: #2c3e50;
+        }
+
+        button {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: all 0.3s;
+        }
+
+        button:hover:not(:disabled) {
+            opacity: 0.8;
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .btn-primary {
+            background: #3498db;
+            color: white;
+        }
+
+        .btn-danger {
+            background: #e74c3c;
+            color: white;
+        }
+
+        .btn-toggle {
+            background: #95a5a6;
+            color: white;
+        }
+
+        .btn-toggle.active {
+            background: #27ae60;
+        }
+
+        .chat-window {
+            flex: 1;
+            background: #ecf0f1;
+            border-radius: 8px;
+            padding: 15px;
+            overflow-y: auto;
+            margin-bottom: 15px;
+            color: #2c3e50;
+            min-height: 400px;
+        }
+
+        .message {
+            margin-bottom: 8px;
+            line-height: 1.5;
+        }
+
+        .message.system {
+            color: #7f8c8d;
+            font-style: italic;
+        }
+
+        .message.error {
+            color: #e74c3c;
+            font-weight: bold;
+            background: #fadbd8;
+            padding: 5px;
+            border-radius: 4px;
+        }
+
+        .input-panel {
+            display: flex;
+            gap: 10px;
+        }
+
+        #messageInput {
+            flex: 1;
+            padding: 12px;
+            border: none;
+            border-radius: 4px;
+            background: #ecf0f1;
+            color: #2c3e50;
+            font-size: 14px;
+        }
+
+        #sendButton {
+            padding: 12px 24px;
+        }
+
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.8);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .modal.active {
+            display: flex;
+        }
+
+        .modal-content {
+            background: #34495e;
+            padding: 30px;
+            border-radius: 8px;
+            max-width: 600px;
+            width: 90%;
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+
+        .modal-content h2 {
+            margin-bottom: 20px;
+            color: #3498db;
+        }
+
+        .modal-content pre {
+            background: #2c3e50;
+            padding: 15px;
+            border-radius: 4px;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            line-height: 1.6;
+        }
+
+        .modal-content input[type="checkbox"] {
+            margin-right: 8px;
+        }
+
+        .modal-footer {
+            margin-top: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .spacer {
+            margin-left: auto;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="settings-panel">
+            <div class="settings-group">
+                <label>Server:</label>
+                <input type="text" id="server" value="irc.libera.chat">
+            </div>
+            <div class="settings-group">
+                <label>Port:</label>
+                <input type="number" id="port" value="6667" style="width: 80px;">
+            </div>
+            <div class="settings-group">
+                <label>Nick:</label>
+                <input type="text" id="nick" value="EncryptedUser">
+            </div>
+            <div class="settings-group">
+                <label>Channel:</label>
+                <input type="text" id="channel" disabled>
+            </div>
+            <button class="btn-toggle" id="customChannelBtn">Custom Channel</button>
+            <button class="btn-toggle active" id="encryptNamesBtn">Encrypt Names</button>
+            <button class="btn-toggle" id="torBtn">Use TOR</button>
+            <div class="spacer"></div>
+            <button class="btn-primary" id="connectBtn">Connect</button>
+        </div>
+
+        <div class="chat-window" id="chatWindow"></div>
+
+        <div class="input-panel">
+            <input type="text" id="messageInput" placeholder="Type your message..." disabled>
+            <button class="btn-primary" id="sendButton">Send</button>
+        </div>
+    </div>
+
+    <div class="modal" id="welcomeModal">
+        <div class="modal-content">
+            <h2>Welcome to LibreSilent</h2>
+            <pre>HOW TO USE:
+1. Basic Setup:
+   • Enter a server (default: irc.libera.chat)
+   • Choose a nickname
+   • Share your encryption key with your intended contact
+   
+2. Security Features:
+   • Name Encryption: Toggle to encrypt usernames (on by default)
+   • Custom Channel: Create your own channel or use auto-generated
+   • TOR Routing: Optional anonymous routing through TOR network
+   
+3. Connecting:
+   • Click 'Connect' and enter your shared encryption key
+   • Both users must use the same encryption key to communicate
+   • The channel will be automatically generated from your key
+   
+4. Privacy Features:
+   • All messages are encrypted end-to-end
+   • Notifications appear for new messages
+   • System tray alerts keep you informed
+   
+IMPORTANT:
+• Keep your encryption key secure and private
+• Both users must use identical encryption keys
+• TOR requires separate installation if needed
+• Custom channels are less secure than auto-generated ones
+
+For maximum security:
+1. Use auto-generated channels
+2. Keep name encryption enabled
+3. Use unique, strong encryption keys
+4. Consider using TOR for additional anonymity</pre>
+            <div class="modal-footer">
+                <label>
+                    <input type="checkbox" id="dontShowAgain">
+                    Don't show this message again
+                </label>
+                <button class="btn-primary" id="closeWelcome">Got it!</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal" id="passwordModal">
+        <div class="modal-content">
+            <h2>Enter Encryption Key</h2>
+            <div style="margin: 20px 0;">
+                <label>Shared Secret Password:</label>
+                <input type="password" id="passwordInput" style="width: 100%; margin-top: 10px;">
+            </div>
+            <div class="modal-footer">
+                <button class="btn-danger" id="cancelPassword">Cancel</button>
+                <button class="btn-primary" id="confirmPassword">Connect</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // State management
+        const state = {
+            connected: false,
+            encryptNames: true,
+            customChannel: false,
+            useTor: false,
+            encryptionKey: null,
+            ws: null,
+            nick: '',
+            channel: ''
+        };
+
+        // DOM elements
+        const elements = {
+            server: document.getElementById('server'),
+            port: document.getElementById('port'),
+            nick: document.getElementById('nick'),
+            channel: document.getElementById('channel'),
+            chatWindow: document.getElementById('chatWindow'),
+            messageInput: document.getElementById('messageInput'),
+            sendButton: document.getElementById('sendButton'),
+            connectBtn: document.getElementById('connectBtn'),
+            customChannelBtn: document.getElementById('customChannelBtn'),
+            encryptNamesBtn: document.getElementById('encryptNamesBtn'),
+            torBtn: document.getElementById('torBtn'),
+            welcomeModal: document.getElementById('welcomeModal'),
+            passwordModal: document.getElementById('passwordModal'),
+            passwordInput: document.getElementById('passwordInput')
+        };
+
+        // Crypto utilities
+        async function deriveKey(password) {
+            const encoder = new TextEncoder();
+            const salt = encoder.encode('encrypted-irc-salt-v1');
+            const passwordBytes = encoder.encode(password);
+            
+            const keyMaterial = await crypto.subtle.importKey(
+                'raw',
+                passwordBytes,
+                'PBKDF2',
+                false,
+                ['deriveBits', 'deriveKey']
+            );
+            
+            const key = await crypto.subtle.deriveKey(
+                {
+                    name: 'PBKDF2',
+                    salt: salt,
+                    iterations: 100000,
+                    hash: 'SHA-256'
+                },
+                keyMaterial,
+                { name: 'AES-GCM', length: 256 },
+                true,
+                ['encrypt', 'decrypt']
+            );
+            
+            return key;
+        }
+
+        async function encryptMessage(message, key) {
+            const encoder = new TextEncoder();
+            const data = encoder.encode(message);
+            const iv = crypto.getRandomValues(new Uint8Array(12));
+            
+            const encrypted = await crypto.subtle.encrypt(
+                { name: 'AES-GCM', iv: iv },
+                key,
+                data
+            );
+            
+            const combined = new Uint8Array(iv.length + encrypted.byteLength);
+            combined.set(iv);
+            combined.set(new Uint8Array(encrypted), iv.length);
+            
+            return btoa(String.fromCharCode(...combined));
+        }
+
+        async function decryptMessage(encryptedData, key) {
+            try {
+                const combined = Uint8Array.from(atob(encryptedData), c => c.charCodeAt(0));
+                const iv = combined.slice(0, 12);
+                const data = combined.slice(12);
+                
+                const decrypted = await crypto.subtle.decrypt(
+                    { name: 'AES-GCM', iv: iv },
+                    key,
+                    data
+                );
+                
+                const decoder = new TextDecoder();
+                return decoder.decode(decrypted);
+            } catch (e) {
+                return null;
+            }
+        }
+
+        async function generateChannelHash(key) {
+            const keyData = await crypto.subtle.exportKey('raw', key);
+            const hash = await crypto.subtle.digest('SHA-256', keyData);
+            const hashArray = Array.from(new Uint8Array(hash));
+            const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+            return '#ls' + hashHex.substring(0, 8);
+        }
+
+        // UI functions
+        function displayMessage(message, type = 'normal') {
+            const div = document.createElement('div');
+            div.className = `message ${type}`;
+            div.textContent = message;
+            elements.chatWindow.appendChild(div);
+            elements.chatWindow.scrollTop = elements.chatWindow.scrollHeight;
+        }
+
+        function toggleButton(button, active) {
+            if (active) {
+                button.classList.add('active');
+            } else {
+                button.classList.remove('active');
+            }
+        }
+
+        // Event handlers
+        elements.customChannelBtn.addEventListener('click', () => {
+            state.customChannel = !state.customChannel;
+            toggleButton(elements.customChannelBtn, state.customChannel);
+            elements.channel.disabled = !state.customChannel;
+            if (!state.customChannel) {
+                elements.channel.value = '';
+            }
+            displayMessage(`Custom channel ${state.customChannel ? 'enabled' : 'disabled'}`, 'system');
+        });
+
+        elements.encryptNamesBtn.addEventListener('click', () => {
+            state.encryptNames = !state.encryptNames;
+            toggleButton(elements.encryptNamesBtn, state.encryptNames);
+            displayMessage(`Name encryption ${state.encryptNames ? 'enabled' : 'disabled'}`, 'system');
+        });
+
+        elements.torBtn.addEventListener('click', () => {
+            displayMessage('TOR routing is not available in browser environment', 'system');
+        });
+
+        elements.connectBtn.addEventListener('click', async () => {
+            if (state.connected) {
+                disconnect();
+            } else {
+                showPasswordModal();
+            }
+        });
+
+        elements.sendButton.addEventListener('click', sendMessage);
+        elements.messageInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') sendMessage();
+        });
+
+        elements.closeWelcome.addEventListener('click', () => {
+            if (document.getElementById('dontShowAgain').checked) {
+                localStorage.setItem('skipWelcome', 'true');
+            }
+            elements.welcomeModal.classList.remove('active');
+        });
+
+        elements.confirmPassword.addEventListener('click', async () => {
+            const password = elements.passwordInput.value;
+            if (!password) {
+                alert('Please enter a password');
+                return;
+            }
+            elements.passwordModal.classList.remove('active');
+            await connect(password);
+            elements.passwordInput.value = '';
+        });
+
+        elements.cancelPassword.addEventListener('click', () => {
+            elements.passwordModal.classList.remove('active');
+            elements.passwordInput.value = '';
+            displayMessage('Connection cancelled', 'system');
+        });
+
+        function showPasswordModal() {
+            elements.passwordModal.classList.add('active');
+            elements.passwordInput.focus();
+        }
+
+        async function connect(password) {
+            state.nick = elements.nick.value;
+            const server = elements.server.value;
+            const port = elements.port.value;
+
+            if (!server || !port || !state.nick) {
+                alert('Please fill in all required fields');
+                return;
+            }
+
+            displayMessage('Deriving encryption key...', 'system');
+            state.encryptionKey = await deriveKey(password);
+
+            if (state.customChannel) {
+                state.channel = elements.channel.value;
+                if (!state.channel.startsWith('#')) {
+                    state.channel = '#' + state.channel;
+                }
+            } else {
+                state.channel = await generateChannelHash(state.encryptionKey);
+                elements.channel.value = state.channel;
+            }
+
+            displayMessage(`Using channel: ${state.channel}`, 'system');
+            displayMessage('NOTE: This is a demo. Real IRC connection requires a WebSocket proxy or server-side implementation.', 'system');
+            displayMessage('Messages will be encrypted/decrypted locally for demonstration.', 'system');
+
+            // Simulate connection
+            state.connected = true;
+            elements.connectBtn.textContent = 'Disconnect';
+            elements.connectBtn.classList.remove('btn-primary');
+            elements.connectBtn.classList.add('btn-danger');
+            elements.messageInput.disabled = false;
+            elements.server.disabled = true;
+            elements.port.disabled = true;
+            elements.nick.disabled = true;
+            elements.channel.disabled = true;
+
+            displayMessage('Connected successfully!', 'system');
+        }
+
+        function disconnect() {
+            state.connected = false;
+            state.encryptionKey = null;
+            elements.connectBtn.textContent = 'Connect';
+            elements.connectBtn.classList.remove('btn-danger');
+            elements.connectBtn.classList.add('btn-primary');
+            elements.messageInput.disabled = true;
+            elements.server.disabled = false;
+            elements.port.disabled = false;
+            elements.nick.disabled = false;
+            elements.channel.disabled = !state.customChannel;
+            displayMessage('Disconnected', 'system');
+        }
+
+        async function sendMessage() {
+            const message = elements.messageInput.value.trim();
+            if (!message || !state.connected || !state.encryptionKey) return;
+
+            const encrypted = await encryptMessage(message, state.encryptionKey);
+            displayMessage(`<${state.nick}> ${message}`);
+            
+            // In a real implementation, send encrypted to IRC server
+            console.log('Encrypted message:', encrypted);
+
+            elements.messageInput.value = '';
+        }
+
+        // Initialize
+        window.addEventListener('load', () => {
+            if (!localStorage.getItem('skipWelcome')) {
+                setTimeout(() => {
+                    elements.welcomeModal.classList.add('active');
+                }, 500);
+            }
+            displayMessage('Welcome to LibreSilent!', 'system');
+            displayMessage('This is a browser-based demonstration of the encrypted IRC client.', 'system');
+        });
+    </script>
+</body>
+</html>
