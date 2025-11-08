@@ -10,6 +10,7 @@ import socks
 import requests
 import json
 import os
+import datetime
 from tkinter import ttk
 from cryptography.fernet import Fernet, InvalidToken
 
@@ -41,16 +42,36 @@ else:
 # Both clients MUST use the exact same salt.
 SALT = b'encrypted-irc-salt-v1'
 
-def derive_key(password: str) -> bytes:
+def get_daily_rotation(rotation_key: str) -> str:
+    """
+    Generates a daily rotation string based on the rotation key and current date.
+    
+    Args:
+        rotation_key: The secondary rotation pattern key.
+        
+    Returns:
+        A daily unique string to modify the main encryption key.
+    """
+    current_date = datetime.datetime.now().strftime("%Y%m%d")
+    daily_seed = f"{rotation_key}{current_date}"
+    return hashlib.sha256(daily_seed.encode()).hexdigest()[:16]
+
+def derive_key(password: str, rotation_key: str = None, use_rotation: bool = False) -> bytes:
     """
     Derives a secure 32-byte (256-bit) encryption key from a user-provided password.
+    Optionally applies daily rotation if rotation_key is provided and use_rotation is True.
 
     Args:
         password: The shared secret password.
+        rotation_key: Optional secondary key for daily rotation.
+        use_rotation: Whether to apply daily rotation.
 
     Returns:
         A 32-byte, base64-encoded key suitable for Fernet (AES-256).
     """
+    if use_rotation and rotation_key:
+        daily_rotation = get_daily_rotation(rotation_key)
+        password = f"{password}{daily_rotation}"
     kdf = hashlib.pbkdf2_hmac(
         'sha256',  # Use SHA-256
         password.encode('utf-8'),  # Convert password to bytes
@@ -356,6 +377,12 @@ For maximum security:
         # TOR Network toggle button
         self.tor_button = tk.Button(self.settings_frame, text="Use TOR", command=self.toggle_tor)
         self.tor_button.pack(side=tk.LEFT, padx=5)
+
+        # Code Rotation toggle button
+        self.use_rotation = False
+        self.rotation_key = None
+        self.rotation_button = tk.Button(self.settings_frame, text="Code Rotation", command=self.toggle_rotation)
+        self.rotation_button.pack(side=tk.LEFT, padx=5)
         
         # Connect/Disconnect button (will toggle command and text)
         self.connect_button = tk.Button(self.settings_frame, text="Connect", command=self.connect)
@@ -408,7 +435,17 @@ For maximum security:
             self.display_message_system("Connection cancelled. No key provided.")
             return
 
-        self.encryption_key = derive_key(password)
+        # If rotation is enabled, prompt for rotation key
+        if self.use_rotation:
+            rotation_key = simpledialog.askstring("Rotation Key", 
+                "Enter your secondary rotation key:", show='*')
+            if not rotation_key:
+                self.display_message_system("Connection cancelled. No rotation key provided.")
+                return
+            self.rotation_key = rotation_key
+            self.display_message_system("Code rotation active - keys will rotate daily")
+        
+        self.encryption_key = derive_key(password, self.rotation_key, self.use_rotation)
         
         if self.using_custom_channel:
             self.channel = self.channel_entry.get()
@@ -620,6 +657,16 @@ For maximum security:
         else:
             self.encrypt_names_button.config(relief=tk.RAISED)
             self.display_message_system("Name encryption disabled")
+            
+    def toggle_rotation(self):
+        """Toggles the daily code rotation feature."""
+        self.use_rotation = not self.use_rotation
+        if self.use_rotation:
+            self.rotation_button.config(relief=tk.SUNKEN)
+            self.display_message_system("Daily code rotation enabled")
+        else:
+            self.rotation_button.config(relief=tk.RAISED)
+            self.display_message_system("Daily code rotation disabled")
 
     def toggle_custom_channel(self):
         """Toggles between custom and auto-generated channel."""
