@@ -6,6 +6,11 @@ import socket
 import base64
 import hashlib
 import platform
+import socks
+import requests
+import json
+import os
+from tkinter import ttk
 from cryptography.fernet import Fernet, InvalidToken
 
 # Import platform-specific notification modules
@@ -99,15 +104,22 @@ class IRCHandler(threading.Thread):
     Handles the raw socket connection to the IRC server in a separate thread
     to avoid blocking the main GUI.
     """
-    def __init__(self, server, port, nick, channel, gui_queue):
+    def __init__(self, server, port, nick, channel, gui_queue, use_tor=False, tor_port=9050):
         super().__init__()
         self.server = server
         self.port = port
         self.nick = nick
         self.channel = channel
         self.gui_queue = gui_queue  # Queue to send received messages to the GUI
+        self.use_tor = use_tor
+        self.tor_port = tor_port
 
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        if self.use_tor:
+            self.sock = socks.socksocket()
+            self.sock.set_proxy(socks.SOCKS5, "127.0.0.1", self.tor_port)
+        else:
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            
         self.running = True
         # Set a timeout so the recv call does not block indefinitely
         self.sock.settimeout(5)
@@ -196,11 +208,106 @@ class IRCHandler(threading.Thread):
 # --- GUI Main Application ---
 
 class EncryptedIRCClient:
+    def show_welcome_dialog(self):
+        """Shows the welcome dialog with app instructions."""
+        # Check if user has chosen to not show the dialog
+        config_path = os.path.expanduser('~/.config/libresilent/config.json')
+        if os.path.exists(config_path):
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+                if config.get('skip_welcome', False):
+                    return
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Welcome to LibreSilent")
+        dialog.geometry("600x500")
+        dialog.transient(self.root)
+        dialog.grab_set()  # Modal dialog
+
+        # Welcome text
+        welcome_text = """Welcome to LibreSilent - Secure IRC Communication
+
+HOW TO USE:
+1. Basic Setup:
+   • Enter a server (default: irc.libera.chat)
+   • Choose a nickname
+   • Share your encryption key with your intended contact
+   
+2. Security Features:
+   • Name Encryption: Toggle to encrypt usernames (on by default)
+   • Custom Channel: Create your own channel or use auto-generated
+   • TOR Routing: Optional anonymous routing through TOR network
+   
+3. Connecting:
+   • Click 'Connect' and enter your shared encryption key
+   • Both users must use the same encryption key to communicate
+   • The channel will be automatically generated from your key
+   
+4. Privacy Features:
+   • All messages are encrypted end-to-end
+   • Notifications appear for new messages
+   • System tray alerts keep you informed
+   
+IMPORTANT:
+• Keep your encryption key secure and private
+• Both users must use identical encryption keys
+• TOR requires separate installation if needed
+• Custom channels are less secure than auto-generated ones
+
+For maximum security:
+1. Use auto-generated channels
+2. Keep name encryption enabled
+3. Use unique, strong encryption keys
+4. Consider using TOR for additional anonymity"""
+
+        # Create a frame with padding
+        frame = ttk.Frame(dialog, padding="10")
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        # Add scrolled text widget for instructions
+        text_widget = scrolledtext.ScrolledText(frame, wrap=tk.WORD, width=70, height=20)
+        text_widget.pack(pady=10)
+        text_widget.insert(tk.END, welcome_text)
+        text_widget.config(state='disabled')
+
+        # Don't show again checkbox
+        var = tk.BooleanVar()
+        check = ttk.Checkbutton(frame, text="Don't show this message again", variable=var)
+        check.pack(pady=5)
+
+        def on_close():
+            if var.get():
+                # Create config directory if it doesn't exist
+                os.makedirs(os.path.dirname(config_path), exist_ok=True)
+                # Save preference
+                with open(config_path, 'w') as f:
+                    json.dump({'skip_welcome': True}, f)
+            dialog.destroy()
+
+        # Close button
+        close_button = ttk.Button(frame, text="Got it!", command=on_close)
+        close_button.pack(pady=10)
+
+        # Center the dialog on the screen
+        dialog.update_idletasks()
+        width = dialog.winfo_width()
+        height = dialog.winfo_height()
+        x = (dialog.winfo_screenwidth() // 2) - (width // 2)
+        y = (dialog.winfo_screenheight() // 2) - (height // 2)
+        dialog.geometry(f'{width}x{height}+{x}+{y}')
+
     def __init__(self, root):
         self.root = root
         self.root.title("Encrypted IRC Client")
-        self.root.geometry("600x500")
+        self.root.attributes('-zoomed', True)  # Linux fullscreen
         self.original_title = self.root.title() # Store original title for notification
+        
+        # Initialize TOR settings
+        self.use_tor = False
+        self.tor_port = 9050  # Default TOR SOCKS port
+        
+        # Show welcome dialog
+        self.root.after(500, self.show_welcome_dialog)  # Show after window is fully loaded
         
         # Initialize notification system
         if HAS_NOTIFICATIONS:
@@ -246,6 +353,10 @@ class EncryptedIRCClient:
         self.encrypt_names = True  # Default to encrypting names
         self.encrypt_names_button.config(relief=tk.SUNKEN)  # Show as active by default
 
+        # TOR Network toggle button
+        self.tor_button = tk.Button(self.settings_frame, text="Use TOR", command=self.toggle_tor)
+        self.tor_button.pack(side=tk.LEFT, padx=5)
+        
         # Connect/Disconnect button (will toggle command and text)
         self.connect_button = tk.Button(self.settings_frame, text="Connect", command=self.connect)
         self.connect_button.pack(side=tk.RIGHT, padx=5)
@@ -326,9 +437,13 @@ class EncryptedIRCClient:
         self.connect_button.config(text="Connecting...", state='disabled')
 
         # Start IRC connection
-        self.irc_thread = IRCHandler(server, port, self.nick, self.channel, self.gui_queue)
+        self.irc_thread = IRCHandler(server, port, self.nick, self.channel, self.gui_queue, 
+                                   use_tor=self.use_tor, tor_port=self.tor_port)
         self.irc_thread.start()
 
+        if self.use_tor:
+            self.display_message_system("Connecting through TOR network...")
+        
         # Start checking the queue for new messages
         self.root.after(100, self.check_queue)
 
@@ -467,6 +582,34 @@ class EncryptedIRCClient:
                 self.toaster.show_toast(title, message, duration=5, threaded=True)
         except Exception as e:
             print(f"Failed to show notification: {e}")
+
+    def check_tor_connection(self):
+        """Checks if TOR is running and accessible."""
+        try:
+            # Try to connect to TOR's SOCKS proxy
+            sock = socks.socksocket()
+            sock.set_proxy(socks.SOCKS5, "127.0.0.1", self.tor_port)
+            sock.settimeout(5)
+            sock.connect(("check.torproject.org", 443))
+            sock.close()
+            return True
+        except Exception:
+            return False
+
+    def toggle_tor(self):
+        """Toggles TOR network usage."""
+        if not self.use_tor:
+            if self.check_tor_connection():
+                self.use_tor = True
+                self.tor_button.config(relief=tk.SUNKEN)
+                self.display_message_system("TOR routing enabled")
+            else:
+                messagebox.showerror("Error", 
+                    "Could not connect to TOR. Make sure TOR is running and listening on port 9050.")
+        else:
+            self.use_tor = False
+            self.tor_button.config(relief=tk.RAISED)
+            self.display_message_system("TOR routing disabled")
 
     def toggle_name_encryption(self):
         """Toggles the encryption of usernames."""
