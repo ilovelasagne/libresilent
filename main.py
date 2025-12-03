@@ -11,10 +11,12 @@ import requests
 import json
 import os
 import datetime
+import argparse
+import sys
 from tkinter import ttk
 from cryptography.fernet import Fernet, InvalidToken
 
-# platform-specific notification modules
+                                        
 if platform.system() == "Linux":
     try:
         import notify2
@@ -36,15 +38,314 @@ elif platform.system() == "Windows":
 else:
     HAS_NOTIFICATIONS = False
 
-# encryption salt constant
+                          
 SALT = b'encrypted-irc-salt-v1'
 
-# --- Theme Management ---
+                                                                   
+
+class TerminalUIHandler:
+    """handles terminal-based UI for IRC communication without GUI"""
+    
+    def __init__(self):
+        self.running = True
+        self.is_ready_to_send = False
+        self.encryption_key = None
+        self.irc_thread = None
+        self.gui_queue = queue.Queue()
+        self.input_thread = None
+        self.nick = None
+        self.channel = None
+        self.use_tor = False
+        self.tor_port = 9050
+        self.encrypt_names = True
+        self.use_rotation = False
+        self.rotation_key = None
+        
+    def print_banner(self):
+        """displays welcome banner"""
+        print("\n" + "="*60)
+        print("  LibreSilent - Encrypted IRC Client (Terminal Mode)")
+        print("="*60)
+        print("All messages are encrypted end-to-end")
+        print("Type 'help' for commands, 'quit' to exit\n")
+    
+    def print_help(self):
+        """displays available commands"""
+        help_text = """
+Available Commands:
+  /help          - Show this help message
+  /nick <name>   - Change nickname
+  /channel       - Show current channel
+  /info          - Show connection info
+  /settings      - Show current settings
+  /encrypt       - Toggle name encryption
+  /rotation      - Toggle daily code rotation
+  /tor           - Toggle TOR connection
+  /quit          - Disconnect and exit
+  /clear         - Clear screen
+
+Just type your message and press Enter to send encrypted messages.
+"""
+        print(help_text)
+    
+    def get_server_config(self):
+        """prompts user for server configuration"""
+        print("\n--- Server Configuration ---")
+        server = input("IRC Server [irc.libera.chat]: ").strip() or "irc.libera.chat"
+        port_str = input("Port [6667]: ").strip() or "6667"
+        
+        try:
+            port = int(port_str)
+        except ValueError:
+            print("Error: Port must be a number. Using default 6667.")
+            port = 6667
+        
+        nick = input("Nickname [EncryptedUser]: ").strip() or "EncryptedUser"
+        
+        return server, port, nick
+    
+    def get_encryption_settings(self):
+        """prompts user for encryption settings"""
+        print("\n--- Encryption Settings ---")
+        
+        password = input("Enter shared encryption key (password): ")
+        while not password:
+            print("Error: Encryption key cannot be empty.")
+            password = input("Enter shared encryption key (password): ")
+        
+        use_rotation = input("Enable daily code rotation? (y/n) [n]: ").strip().lower() == 'y'
+        rotation_key = None
+        
+        if use_rotation:
+            rotation_key = input("Enter rotation key: ")
+            while not rotation_key:
+                print("Error: Rotation key cannot be empty.")
+                rotation_key = input("Enter rotation key: ")
+        
+        return password, use_rotation, rotation_key
+    
+    def get_channel_choice(self):
+        """prompts user to choose between auto and custom channel"""
+        print("\n--- Channel Selection ---")
+        choice = input("Use auto-generated channel? (y/n) [y]: ").strip().lower()
+        
+        if choice == 'n':
+            custom_channel = input("Enter custom channel name: ").strip()
+            if not custom_channel.startswith('#'):
+                custom_channel = f"#{custom_channel}"
+            return custom_channel
+        else:
+            return None
+    
+    def connect(self):
+        """main connection flow"""
+        self.print_banner()
+        
+        server, port, nick = self.get_server_config()
+        self.nick = nick
+        
+        password, use_rotation, rotation_key = self.get_encryption_settings()
+        self.use_rotation = use_rotation
+        self.rotation_key = rotation_key
+        
+        custom_channel = self.get_channel_choice()
+        
+        if custom_channel:
+            self.channel = custom_channel
+        else:
+            self.encryption_key = derive_key(password, rotation_key, use_rotation)
+            channel_hash = hashlib.sha256(self.encryption_key).hexdigest()[:8]
+            self.channel = f"#ls{channel_hash}"
+        
+        self.encryption_key = derive_key(password, rotation_key, use_rotation)
+        
+        print(f"\nConnecting to {server}:{port} as {nick}...")
+        print(f"Using channel: {self.channel}")
+        
+        self.irc_thread = IRCHandler(server, port, nick, self.channel, self.gui_queue, 
+                                    use_tor=self.use_tor, tor_port=self.tor_port)
+        self.irc_thread.start()
+        
+        print("Connected! Type your messages below. Type '/help' for commands.\n")
+        print("-" * 60)
+        
+        self.input_thread = threading.Thread(target=self.input_loop, daemon=True)
+        self.input_thread.start()
+        
+        self.message_loop()
+    
+    def input_loop(self):
+        """handles user input in a separate thread"""
+        while self.running:
+            try:
+                user_input = input()
+                if user_input:
+                    self.gui_queue.put(('USER_INPUT', user_input))
+            except EOFError:
+                self.gui_queue.put(('USER_INPUT', '/quit'))
+                break
+    
+    def message_loop(self):
+        """main message processing loop"""
+        self.is_ready_to_send = False
+        
+        while self.running and self.irc_thread.is_alive():
+            try:
+                sender, message = self.gui_queue.get(timeout=0.5)
+                
+                if sender == 'USER_INPUT':
+                    self.handle_user_input(message)
+                elif sender == 'SYSTEM_MESSAGE':
+                    if "Successfully joined" in message:
+                        self.is_ready_to_send = True
+                        print("[SYSTEM] Ready to send messages!")
+                    print(f"[SYSTEM] {message}")
+                elif sender == 'SYSTEM_ERROR':
+                    print(f"[ERROR] {message}")
+                    self.running = False
+                else:
+                    decrypted = decrypt_message(message, self.encryption_key)
+                    
+                    displayed_sender = sender
+                    if self.encrypt_names and sender != self.nick:
+                        try:
+                            decrypted_sender = decrypt_message(sender, self.encryption_key)
+                            if decrypted_sender:
+                                displayed_sender = decrypted_sender
+                        except Exception:
+                            pass
+                    
+                    if decrypted:
+                        print(f"<{displayed_sender}> {decrypted}")
+                    else:
+                        print(f"<{sender}> [Unencrypted or corrupt message]")
+                    
+                    print("> ", end="", flush=True)
+                    
+            except queue.Empty:
+                continue
+            except Exception as e:
+                print(f"[ERROR] {e}")
+                self.running = False
+    
+    def handle_user_input(self, user_input):
+        """handles user commands and messages"""
+        if user_input.startswith('/'):
+            self.handle_command(user_input)
+        elif self.is_ready_to_send and self.irc_thread and self.encryption_key:
+            encrypted_message = encrypt_message(user_input, self.encryption_key)
+            self.irc_thread.send_privmsg(encrypted_message)
+            
+            if self.encrypt_names:
+                encrypted_nick = encrypt_message(self.nick, self.encryption_key)
+                self.irc_thread.nick = encrypted_nick
+            
+            print(f"<{self.nick}> {user_input}")
+            print("> ", end="", flush=True)
+        elif user_input:
+            print("[SYSTEM] Waiting for channel connection. Please wait...")
+            print("> ", end="", flush=True)
+    
+    def handle_command(self, command):
+        """handles slash commands"""
+        parts = command.split(maxsplit=1)
+        cmd = parts[0].lower()
+        
+        if cmd == '/help':
+            self.print_help()
+        elif cmd == '/quit':
+            self.quit_app()
+        elif cmd == '/nick':
+            if len(parts) > 1:
+                self.nick = parts[1]
+                print(f"[SYSTEM] Nickname set to: {self.nick}")
+            else:
+                print(f"[SYSTEM] Current nickname: {self.nick}")
+        elif cmd == '/channel':
+            print(f"[SYSTEM] Current channel: {self.channel}")
+        elif cmd == '/info':
+            self.show_info()
+        elif cmd == '/settings':
+            self.show_settings()
+        elif cmd == '/encrypt':
+            self.encrypt_names = not self.encrypt_names
+            status = "enabled" if self.encrypt_names else "disabled"
+            print(f"[SYSTEM] Name encryption {status}")
+        elif cmd == '/rotation':
+            self.use_rotation = not self.use_rotation
+            status = "enabled" if self.use_rotation else "disabled"
+            print(f"[SYSTEM] Code rotation {status}")
+        elif cmd == '/tor':
+            if not self.use_tor:
+                if self.check_tor_connection():
+                    self.use_tor = True
+                    print("[SYSTEM] TOR routing enabled")
+                else:
+                    print("[ERROR] Could not connect to TOR. Make sure it's running on port 9050.")
+            else:
+                self.use_tor = False
+                print("[SYSTEM] TOR routing disabled")
+        elif cmd == '/clear':
+            os.system('clear' if platform.system() != 'Windows' else 'cls')
+            self.print_banner()
+        else:
+            print(f"[SYSTEM] Unknown command: {cmd}. Type '/help' for available commands.")
+        
+        print("> ", end="", flush=True)
+    
+    def show_info(self):
+        """displays connection information"""
+        info = f"""
+--- Connection Info ---
+Channel: {self.channel}
+Nickname: {self.nick}
+Connected: {self.is_ready_to_send}
+Name Encryption: {self.encrypt_names}
+Code Rotation: {self.use_rotation}
+TOR Enabled: {self.use_tor}
+"""
+        print(info)
+    
+    def show_settings(self):
+        """displays current settings"""
+        settings = f"""
+--- Current Settings ---
+Channel: {self.channel}
+Nickname: {self.nick}
+Name Encryption: {'Yes' if self.encrypt_names else 'No'}
+Code Rotation: {'Yes' if self.use_rotation else 'No'}
+TOR Routing: {'Yes' if self.use_tor else 'No'}
+TOR Port: {self.tor_port if self.use_tor else 'N/A'}
+"""
+        print(settings)
+    
+    def check_tor_connection(self):
+        """checks if tor is running and accessible"""
+        try:
+            sock = socks.socksocket()
+            sock.set_proxy(socks.SOCKS5, "127.0.0.1", self.tor_port)
+            sock.settimeout(5)
+            sock.connect(("check.torproject.org", 443))
+            sock.close()
+            return True
+        except Exception:
+            return False
+    
+    def quit_app(self):
+        """stops irc thread and exits application"""
+        print("\n[SYSTEM] Disconnecting...")
+        self.running = False
+        if self.irc_thread:
+            self.irc_thread.stop()
+        print("[SYSTEM] Goodbye!")
+        sys.exit(0)
+
+                          
 
 class ThemeManager:
     """handles application theming and system theme synchronization"""
     
-    # theme color schemes
+                         
     LIGHT_THEME = {
         'bg': '#ffffff',
         'fg': '#000000',
@@ -81,15 +382,15 @@ class ThemeManager:
         """detect system theme preference"""
         try:
             if platform.system() == "Linux":
-                # check for gtk settings on linux
+                                                 
                 result = os.popen('gsettings get org.gnome.desktop.interface gtk-application-prefer-dark-theme 2>/dev/null').read().strip()
                 return 'dark' if 'true' in result else 'light'
             elif platform.system() == "Darwin":
-                # check macOS appearance
+                                        
                 result = os.popen('defaults read -g AppleInterfaceStyle 2>/dev/null').read().strip()
                 return 'dark' if 'Dark' in result else 'light'
             elif platform.system() == "Windows":
-                # check windows registry for dark mode
+                                                      
                 try:
                     import winreg
                     registry_path = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
@@ -137,7 +438,7 @@ class ThemeManager:
         """get color scheme for theme"""
         return ThemeManager.DARK_THEME if theme == 'dark' else ThemeManager.LIGHT_THEME
 
-# --- Crypto Utilities ---
+                          
 
 def get_daily_rotation(rotation_key: str) -> str:
     """generates daily rotation string based on rotation key and current date"""
@@ -174,7 +475,7 @@ def decrypt_message(token: str, key: bytes) -> str | None:
     except (InvalidToken, TypeError, Exception):
         return None
 
-# --- Settings Management ---
+                             
 
 class SettingsManager:
     """handles encryption and persistence of application settings"""
@@ -272,7 +573,7 @@ class SettingsManager:
         """imports encrypted settings from file"""
         return SettingsManager.load_settings(password, import_path)
 
-# --- IRC Connection Handler ---
+                                
 
 class IRCHandler(threading.Thread):
     """
@@ -285,7 +586,7 @@ class IRCHandler(threading.Thread):
         self.port = port
         self.nick = nick
         self.channel = channel
-        self.gui_queue = gui_queue  # Queue to send received messages to the GUI
+        self.gui_queue = gui_queue                                              
         self.use_tor = use_tor
         self.tor_port = tor_port
 
@@ -296,7 +597,7 @@ class IRCHandler(threading.Thread):
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             
         self.running = True
-        # Set a timeout so the recv call does not block indefinitely
+                                                                    
         self.sock.settimeout(5)
 
     def run(self):
@@ -306,20 +607,20 @@ class IRCHandler(threading.Thread):
             self.send_command(f"NICK {self.nick}")
             self.send_command(f"USER {self.nick} 0 * :{self.nick}")
 
-            # We wait for the server to acknowledge us before joining
+                                                                     
             while self.running:
                 try:
-                    # Blocking call with timeout
+                                                
                     data = self.sock.recv(4096).decode('utf-8')
                 except socket.timeout:
-                    # If timeout occurs, simply continue the loop to check self.running state
+                                                                                             
                     continue
 
                 if not data:
                     break
 
                 for line in data.splitlines():
-                    if "001" in line: # 001 is the "Welcome" numeric
+                    if "001" in line:                               
                         self.gui_queue.put(('SYSTEM_MESSAGE', f"Successfully joined {self.channel} on {self.server}."))
                         self.send_command(f"JOIN {self.channel}")
 
@@ -327,12 +628,12 @@ class IRCHandler(threading.Thread):
                         self.handle_ping(line)
                     elif "PRIVMSG" in line:
                         self.handle_privmsg(line)
-                    # Add raw server output for debugging/status (optional)
+                                                                           
                     elif not line.startswith(":"):
                         self.gui_queue.put(('SYSTEM_MESSAGE', line))
 
         except Exception as e:
-            # Report critical connection errors back to the GUI
+                                                               
             error_message = f"Failed to connect or connection lost: {e}"
             self.gui_queue.put(('SYSTEM_ERROR', error_message))
         finally:
@@ -358,11 +659,11 @@ class IRCHandler(threading.Thread):
     def handle_privmsg(self, line):
         """Parses a PRIVMSG and puts the sender/message in the GUI queue."""
         try:
-            # Format: :<sender>!<user>@<host> PRIVMSG <channel> :<message>
+                                                                          
             sender = line.split("!")[0][1:]
             message_content = line.split(":", 2)[-1]
 
-            # We only care about messages in our channel from other users
+                                                                         
             if self.channel in line and sender != self.nick:
                 self.gui_queue.put((sender, message_content))
         except Exception as e:
@@ -372,26 +673,26 @@ class IRCHandler(threading.Thread):
         """Stops the connection thread."""
         self.running = False
         try:
-            # Send QUIT command before closing socket, if possible
+                                                                  
             if self.sock.fileno() != -1:
                 self.sock.send(f"QUIT :Client disconnecting\r\n".encode('utf-8'))
                 self.sock.shutdown(socket.SHUT_RDWR)
                 self.sock.close()
         except Exception:
-            pass # Socket might already be closed or shut down
+            pass                                              
 
-# --- GUI Main Application ---
+                              
 
 class EncryptedIRCClient:
     def apply_theme(self, theme: str):
         """applies theme to application"""
         self.colors = ThemeManager.get_theme_colors(theme)
         self.root.config(bg=self.colors['bg'])
-        # Configure ttk styles so themed widgets follow the color scheme
+                                                                        
         try:
             style = ttk.Style()
-            # Set theme-specific base if available for better control
-            # Not all ttk themes support background changes, but configure anyway
+                                                                     
+                                                                                 
             style.configure('TFrame', background=self.colors['frame_bg'])
             style.configure('TLabel', background=self.colors['frame_bg'], foreground=self.colors['fg'])
             style.configure('TButton', background=self.colors['button_bg'], foreground=self.colors['button_fg'])
@@ -400,17 +701,17 @@ class EncryptedIRCClient:
         except Exception:
             pass
 
-        # Safely update already-created widgets (if apply_theme called after init)
-        # Use hasattr checks because apply_theme is called early in __init__ before widgets exist
+                                                                                  
+                                                                                                 
         try:
             if hasattr(self, 'settings_frame'):
                 self.settings_frame.config(bg=self.colors['frame_bg'])
             if hasattr(self, 'bottom_frame'):
                 self.bottom_frame.config(bg=self.colors['frame_bg'])
             if hasattr(self, 'chat_window'):
-                # scrolledtext is a Text widget; configure background/foreground
+                                                                                
                 self.chat_window.config(bg=self.colors['text_bg'], fg=self.colors['text_fg'], insertbackground=self.colors['text_fg'])
-            # Entries and buttons
+                                 
             for name in ('message_entry','server_entry','port_entry','nick_entry','channel_entry'):
                 if hasattr(self, name):
                     w = getattr(self, name)
@@ -482,7 +783,7 @@ class EncryptedIRCClient:
         dialog.grab_set()
         dialog.config(bg=self.colors['bg'])
 
-        # welcome text
+                      
         welcome_text = """Welcome to LibreSilent - Secure IRC Communication
 
 HOW TO USE:
@@ -552,7 +853,7 @@ For maximum security:
         menubar = tk.Menu(self.root)
         self.root.config(menu=menubar)
 
-        # file menu
+                   
         file_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="File", menu=file_menu)
         file_menu.add_command(label="New", command=self.menu_new)
@@ -562,7 +863,7 @@ For maximum security:
         file_menu.add_separator()
         file_menu.add_command(label="Exit", command=self.on_closing)
 
-        # edit menu
+                   
         edit_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Edit", menu=edit_menu)
         edit_menu.add_command(label="Undo", command=self.menu_undo)
@@ -575,7 +876,7 @@ For maximum security:
         edit_menu.add_command(label="Select All", command=self.menu_select_all)
         edit_menu.add_command(label="Clear", command=self.menu_clear)
 
-        # view menu
+                   
         view_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="View", menu=view_menu)
         view_menu.add_command(label="Clear Chat", command=self.menu_clear_chat)
@@ -586,7 +887,7 @@ For maximum security:
         view_menu.add_separator()
         view_menu.add_command(label="Settings", command=self.menu_settings)
 
-        # help menu
+                   
         help_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Help", menu=help_menu)
         help_menu.add_command(label="About", command=self.menu_about)
@@ -618,27 +919,27 @@ For maximum security:
             messagebox.showwarning("Warning", "No connection configured. Please configure connection first.")
             return
         
-        # Prompt for master password to encrypt settings
+                                                        
         password = simpledialog.askstring("Master Password", 
             "Enter a master password to encrypt these settings:", show='*')
         if not password:
             messagebox.showwarning("Cancelled", "Settings save cancelled.")
             return
         
-        # Create settings dictionary
+                                    
         settings = SettingsManager.create_settings_dict(
             server=self.server_entry.get(),
             port=int(self.port_entry.get()),
             nick=self.nick_entry.get(),
             channel=self.channel_entry.get(),
-            password="",  # Password is not stored
+            password="",                          
             rotation_key=self.rotation_key,
             use_rotation=self.use_rotation,
             use_tor=self.use_tor,
             encrypt_names=self.encrypt_names
         )
         
-        # Save settings
+                       
         if SettingsManager.save_settings(settings, password):
             messagebox.showinfo("Success", "Settings saved successfully to:\n" + 
                               SettingsManager.DEFAULT_SETTINGS_FILE)
@@ -652,7 +953,7 @@ For maximum security:
             messagebox.showwarning("Warning", "No connection configured. Please configure connection first.")
             return
         
-        # Ask for file location
+                               
         filepath = filedialog.asksaveasfilename(
             defaultextension=".lsconf",
             filetypes=[("LibreSilent Config", "*.lsconf"), ("JSON files", "*.json"), ("All files", "*.*")]
@@ -661,27 +962,27 @@ For maximum security:
         if not filepath:
             return
         
-        # Prompt for master password
+                                    
         password = simpledialog.askstring("Master Password", 
             "Enter a master password to encrypt these settings:", show='*')
         if not password:
             messagebox.showwarning("Cancelled", "Settings export cancelled.")
             return
         
-        # Create settings dictionary
+                                    
         settings = SettingsManager.create_settings_dict(
             server=self.server_entry.get(),
             port=int(self.port_entry.get()),
             nick=self.nick_entry.get(),
             channel=self.channel_entry.get(),
-            password="",  # Password is not stored
+            password="",                          
             rotation_key=self.rotation_key,
             use_rotation=self.use_rotation,
             use_tor=self.use_tor,
             encrypt_names=self.encrypt_names
         )
         
-        # Export settings
+                         
         if SettingsManager.export_settings(settings, password, filepath):
             messagebox.showinfo("Success", f"Settings exported successfully to:\n{filepath}")
             self.display_message_system(f"Settings exported to {filepath}")
@@ -887,28 +1188,28 @@ NOTES:
         self.root.attributes('-zoomed', True)
         self.original_title = self.root.title()
         
-        # initialize theme
+                          
         self.current_theme = ThemeManager.load_theme_preference()
         self.apply_theme(self.current_theme)
         
-        # initialize TOR settings
+                                 
         self.use_tor = False
         self.tor_port = 9050
         
-        # create menu bar
+                         
         self.create_menu_bar()
         
-        # show welcome dialog
+                             
         self.root.after(500, self.show_welcome_dialog)
         
-        # initialize notification system
+                                        
         if HAS_NOTIFICATIONS:
             if platform.system() == "Linux":
                 notify2.init("LibreSilent")
             elif platform.system() == "Windows":
                 self.toaster = ToastNotifier()
 
-        # --- Top Frame (Settings) ---
+                                      
         self.settings_frame = tk.Frame(root, pady=5, **self.get_frame_style())
         self.settings_frame.pack(fill='x')
 
@@ -933,36 +1234,36 @@ NOTES:
         self.channel_entry.config(state='disabled')
         self.channel_entry.pack(side=tk.LEFT)
 
-        # custom channel button
+                               
         self.custom_channel_button = tk.Button(self.settings_frame, text="Custom Channel", command=self.toggle_custom_channel, **self.get_button_style())
         self.custom_channel_button.pack(side=tk.LEFT, padx=5)
         self.using_custom_channel = False
 
-        # encrypt names toggle button
+                                     
         self.encrypt_names_button = tk.Button(self.settings_frame, text="Encrypt Names", command=self.toggle_name_encryption, **self.get_button_style())
         self.encrypt_names_button.pack(side=tk.LEFT, padx=5)
         self.encrypt_names = True
         self.encrypt_names_button.config(relief=tk.SUNKEN)
 
-        # tor network toggle button
+                                   
         self.tor_button = tk.Button(self.settings_frame, text="Use TOR", command=self.toggle_tor, **self.get_button_style())
         self.tor_button.pack(side=tk.LEFT, padx=5)
 
-        # code rotation toggle button
+                                     
         self.use_rotation = False
         self.rotation_key = None
         self.rotation_button = tk.Button(self.settings_frame, text="Code Rotation", command=self.toggle_rotation, **self.get_button_style())
         self.rotation_button.pack(side=tk.LEFT, padx=5)
         
-        # connect/disconnect button
+                                   
         self.connect_button = tk.Button(self.settings_frame, text="Connect", command=self.connect, **self.get_button_style())
         self.connect_button.pack(side=tk.RIGHT, padx=5)
 
-        # --- Middle Frame (Chat Window) ---
+                                            
         self.chat_window = scrolledtext.ScrolledText(root, state='disabled', wrap=tk.WORD, relief=tk.SUNKEN, borderwidth=1, **self.get_text_style())
         self.chat_window.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
-        # --- Bottom Frame (Message Entry) ---
+                                              
         self.bottom_frame = tk.Frame(root, pady=5, **self.get_frame_style())
         self.bottom_frame.pack(fill='x')
 
@@ -973,7 +1274,7 @@ NOTES:
         self.send_button = tk.Button(self.bottom_frame, text="Send", command=self.send_message_event, **self.get_button_style())
         self.send_button.pack(side=tk.RIGHT, padx=5)
 
-        # --- Class variables ---
+                                 
         self.gui_queue = queue.Queue()
         self.irc_thread = None
         self.encryption_key = None
@@ -999,13 +1300,13 @@ NOTES:
             messagebox.showerror("Error", "All fields except channel are required.")
             return
 
-        # Prompt for the shared secret key
+                                          
         password = simpledialog.askstring("Secret Key", "Enter your shared secret password:", show='*')
         if not password:
             self.display_message_system("Connection cancelled. No key provided.")
             return
 
-        # If rotation is enabled, prompt for rotation key
+                                                         
         if self.use_rotation:
             rotation_key = simpledialog.askstring("Rotation Key", 
                 "Enter your secondary rotation key:", show='*')
@@ -1025,9 +1326,9 @@ NOTES:
             if not self.channel.startswith('#'):
                 self.channel = f"#{self.channel}"
         else:
-            # Generate channel name from encryption key
+                                                       
             channel_hash = hashlib.sha256(self.encryption_key).hexdigest()[:8]
-            self.channel = f"#ls{channel_hash}"  # 'ls' prefix for 'libresilent'
+            self.channel = f"#ls{channel_hash}"                                 
             self.channel_entry.config(state='normal')
             self.channel_entry.delete(0, tk.END)
             self.channel_entry.insert(0, self.channel)
@@ -1036,14 +1337,14 @@ NOTES:
         self.display_message_system(f"Key derived. Using channel {self.channel}")
         self.display_message_system(f"Connecting to {server}...")
 
-        # Disable settings
+                          
         self.server_entry.config(state='disabled')
         self.port_entry.config(state='disabled')
         self.nick_entry.config(state='disabled')
         self.channel_entry.config(state='disabled')
         self.connect_button.config(text="Connecting...", state='disabled')
 
-        # Start IRC connection
+                              
         self.irc_thread = IRCHandler(server, port, self.nick, self.channel, self.gui_queue, 
                                    use_tor=self.use_tor, tor_port=self.tor_port)
         self.irc_thread.start()
@@ -1051,7 +1352,7 @@ NOTES:
         if self.use_tor:
             self.display_message_system("Connecting through TOR network...")
         
-        # Start checking the queue for new messages
+                                                   
         self.root.after(100, self.check_queue)
 
     def disconnect(self):
@@ -1254,8 +1555,29 @@ NOTES:
             self.irc_thread.stop()
         self.root.destroy()
 
-# --- Main execution ---
+                        
 if __name__ == "__main__":
-    root = tk.Tk()
-    app = EncryptedIRCClient(root)
-    root.mainloop()
+    parser = argparse.ArgumentParser(
+        description="LibreSilent - Encrypted IRC Client",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python main.py              # Launch GUI mode (default)
+  python main.py -nogui       # Launch terminal-based UI mode
+  python main.py --help       # Show this help message
+        """
+    )
+    parser.add_argument('-nogui', '--no-gui', action='store_true', dest='no_gui',
+                       help='Run in terminal mode without GUI')
+    
+    args = parser.parse_args()
+    
+    if args.no_gui:
+        # Terminal UI mode
+        terminal_app = TerminalUIHandler()
+        terminal_app.connect()
+    else:
+        # GUI mode
+        root = tk.Tk()
+        app = EncryptedIRCClient(root)
+        root.mainloop()
