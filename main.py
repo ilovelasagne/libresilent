@@ -1,5 +1,10 @@
-import tkinter as tk
-from tkinter import scrolledtext, messagebox, simpledialog, filedialog
+#!/usr/bin/env python3
+"""
+LibreSilent - Encrypted IRC Client (Qt-based GUI)
+A beautiful, modern implementation using PyQt5
+"""
+
+import sys
 import queue
 import threading
 import socket
@@ -12,11 +17,23 @@ import json
 import os
 import datetime
 import argparse
-import sys
-from tkinter import ttk
 from cryptography.fernet import Fernet, InvalidToken
+from PyQt5.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QLabel, QLineEdit, QPushButton, QTextEdit, QFrame, QTabWidget,
+    QDialog, QScrollArea, QCheckBox, QComboBox, QSpinBox, QMessageBox,
+    QFileDialog, QInputDialog, QStatusBar, QSplitter
+)
+from PyQt5.QtCore import (
+    Qt, QTimer, pyqtSignal, QObject, QSize, QRect,
+    QPropertyAnimation, QEasingCurve, QThread, QEvent
+)
+from PyQt5.QtGui import (
+    QFont, QColor, QIcon, QPalette, QTextCursor, QPixmap,
+    QLinearGradient, QBrush, QPainter, QPen
+)
+from PyQt5.QtWidgets import QApplication, QSystemTrayIcon, QMenu
 
-                                        
 if platform.system() == "Linux":
     try:
         import notify2
@@ -24,11 +41,7 @@ if platform.system() == "Linux":
     except ImportError:
         HAS_NOTIFICATIONS = False
 elif platform.system() == "Darwin":
-    try:
-        import os
-        HAS_NOTIFICATIONS = True
-    except ImportError:
-        HAS_NOTIFICATIONS = False
+    HAS_NOTIFICATIONS = True
 elif platform.system() == "Windows":
     try:
         from win10toast import ToastNotifier
@@ -38,413 +51,21 @@ elif platform.system() == "Windows":
 else:
     HAS_NOTIFICATIONS = False
 
-                          
 SALT = b'encrypted-irc-salt-v1'
 
-                                                                   
 
-class TerminalUIHandler:
-    """handles terminal-based UI for IRC communication without GUI"""
-    
-    def __init__(self):
-        self.running = True
-        self.is_ready_to_send = False
-        self.encryption_key = None
-        self.irc_thread = None
-        self.gui_queue = queue.Queue()
-        self.input_thread = None
-        self.nick = None
-        self.channel = None
-        self.use_tor = False
-        self.tor_port = 9050
-        self.encrypt_names = True
-        self.use_rotation = False
-        self.rotation_key = None
-        
-    def print_banner(self):
-        """displays welcome banner"""
-        print("\n" + "="*60)
-        print("  LibreSilent - Encrypted IRC Client (Terminal Mode)")
-        print("="*60)
-        print("All messages are encrypted end-to-end")
-        print("Type 'help' for commands, 'quit' to exit\n")
-    
-    def print_help(self):
-        """displays available commands"""
-        help_text = """
-Available Commands:
-  /help          - Show this help message
-  /nick <name>   - Change nickname
-  /channel       - Show current channel
-  /info          - Show connection info
-  /settings      - Show current settings
-  /encrypt       - Toggle name encryption
-  /rotation      - Toggle daily code rotation
-  /tor           - Toggle TOR connection
-  /quit          - Disconnect and exit
-  /clear         - Clear screen
+# ============================================================================
+# ENCRYPTION & KEY DERIVATION
+# ============================================================================
 
-Just type your message and press Enter to send encrypted messages.
-"""
-        print(help_text)
-    
-    def get_server_config(self):
-        """prompts user for server configuration"""
-        print("\n--- Server Configuration ---")
-        server = input("IRC Server [irc.libera.chat]: ").strip() or "irc.libera.chat"
-        port_str = input("Port [6667]: ").strip() or "6667"
-        
-        try:
-            port = int(port_str)
-        except ValueError:
-            print("Error: Port must be a number. Using default 6667.")
-            port = 6667
-        
-        nick = input("Nickname [EncryptedUser]: ").strip() or "EncryptedUser"
-        
-        return server, port, nick
-    
-    def get_encryption_settings(self):
-        """prompts user for encryption settings"""
-        print("\n--- Encryption Settings ---")
-        
-        password = input("Enter shared encryption key (password): ")
-        while not password:
-            print("Error: Encryption key cannot be empty.")
-            password = input("Enter shared encryption key (password): ")
-        
-        use_rotation = input("Enable daily code rotation? (y/n) [n]: ").strip().lower() == 'y'
-        rotation_key = None
-        
-        if use_rotation:
-            rotation_key = input("Enter rotation key: ")
-            while not rotation_key:
-                print("Error: Rotation key cannot be empty.")
-                rotation_key = input("Enter rotation key: ")
-        
-        return password, use_rotation, rotation_key
-    
-    def get_channel_choice(self):
-        """prompts user to choose between auto and custom channel"""
-        print("\n--- Channel Selection ---")
-        choice = input("Use auto-generated channel? (y/n) [y]: ").strip().lower()
-        
-        if choice == 'n':
-            custom_channel = input("Enter custom channel name: ").strip()
-            if not custom_channel.startswith('#'):
-                custom_channel = f"#{custom_channel}"
-            return custom_channel
-        else:
-            return None
-    
-    def connect(self):
-        """main connection flow"""
-        self.print_banner()
-        
-        server, port, nick = self.get_server_config()
-        self.nick = nick
-        
-        password, use_rotation, rotation_key = self.get_encryption_settings()
-        self.use_rotation = use_rotation
-        self.rotation_key = rotation_key
-        
-        custom_channel = self.get_channel_choice()
-        
-        if custom_channel:
-            self.channel = custom_channel
-        else:
-            self.encryption_key = derive_key(password, rotation_key, use_rotation)
-            channel_hash = hashlib.sha256(self.encryption_key).hexdigest()[:8]
-            self.channel = f"#ls{channel_hash}"
-        
-        self.encryption_key = derive_key(password, rotation_key, use_rotation)
-        
-        print(f"\nConnecting to {server}:{port} as {nick}...")
-        print(f"Using channel: {self.channel}")
-        
-        self.irc_thread = IRCHandler(server, port, nick, self.channel, self.gui_queue, 
-                                    use_tor=self.use_tor, tor_port=self.tor_port)
-        self.irc_thread.start()
-        
-        print("Connected! Type your messages below. Type '/help' for commands.\n")
-        print("-" * 60)
-        
-        self.input_thread = threading.Thread(target=self.input_loop, daemon=True)
-        self.input_thread.start()
-        
-        self.message_loop()
-    
-    def input_loop(self):
-        """handles user input in a separate thread"""
-        while self.running:
-            try:
-                user_input = input()
-                if user_input:
-                    self.gui_queue.put(('USER_INPUT', user_input))
-            except EOFError:
-                self.gui_queue.put(('USER_INPUT', '/quit'))
-                break
-    
-    def message_loop(self):
-        """main message processing loop"""
-        self.is_ready_to_send = False
-        
-        while self.running and self.irc_thread.is_alive():
-            try:
-                sender, message = self.gui_queue.get(timeout=0.5)
-                
-                if sender == 'USER_INPUT':
-                    self.handle_user_input(message)
-                elif sender == 'SYSTEM_MESSAGE':
-                    if "Successfully joined" in message:
-                        self.is_ready_to_send = True
-                        print("[SYSTEM] Ready to send messages!")
-                    print(f"[SYSTEM] {message}")
-                elif sender == 'SYSTEM_ERROR':
-                    print(f"[ERROR] {message}")
-                    self.running = False
-                else:
-                    decrypted = decrypt_message(message, self.encryption_key)
-                    
-                    displayed_sender = sender
-                    if self.encrypt_names and sender != self.nick:
-                        try:
-                            decrypted_sender = decrypt_message(sender, self.encryption_key)
-                            if decrypted_sender:
-                                displayed_sender = decrypted_sender
-                        except Exception:
-                            pass
-                    
-                    if decrypted:
-                        print(f"<{displayed_sender}> {decrypted}")
-                    else:
-                        print(f"<{sender}> [Unencrypted or corrupt message]")
-                    
-                    print("> ", end="", flush=True)
-                    
-            except queue.Empty:
-                continue
-            except Exception as e:
-                print(f"[ERROR] {e}")
-                self.running = False
-    
-    def handle_user_input(self, user_input):
-        """handles user commands and messages"""
-        if user_input.startswith('/'):
-            self.handle_command(user_input)
-        elif self.is_ready_to_send and self.irc_thread and self.encryption_key:
-            encrypted_message = encrypt_message(user_input, self.encryption_key)
-            self.irc_thread.send_privmsg(encrypted_message)
-            
-            if self.encrypt_names:
-                encrypted_nick = encrypt_message(self.nick, self.encryption_key)
-                self.irc_thread.nick = encrypted_nick
-            
-            print(f"<{self.nick}> {user_input}")
-            print("> ", end="", flush=True)
-        elif user_input:
-            print("[SYSTEM] Waiting for channel connection. Please wait...")
-            print("> ", end="", flush=True)
-    
-    def handle_command(self, command):
-        """handles slash commands"""
-        parts = command.split(maxsplit=1)
-        cmd = parts[0].lower()
-        
-        if cmd == '/help':
-            self.print_help()
-        elif cmd == '/quit':
-            self.quit_app()
-        elif cmd == '/nick':
-            if len(parts) > 1:
-                self.nick = parts[1]
-                print(f"[SYSTEM] Nickname set to: {self.nick}")
-            else:
-                print(f"[SYSTEM] Current nickname: {self.nick}")
-        elif cmd == '/channel':
-            print(f"[SYSTEM] Current channel: {self.channel}")
-        elif cmd == '/info':
-            self.show_info()
-        elif cmd == '/settings':
-            self.show_settings()
-        elif cmd == '/encrypt':
-            self.encrypt_names = not self.encrypt_names
-            status = "enabled" if self.encrypt_names else "disabled"
-            print(f"[SYSTEM] Name encryption {status}")
-        elif cmd == '/rotation':
-            self.use_rotation = not self.use_rotation
-            status = "enabled" if self.use_rotation else "disabled"
-            print(f"[SYSTEM] Code rotation {status}")
-        elif cmd == '/tor':
-            if not self.use_tor:
-                if self.check_tor_connection():
-                    self.use_tor = True
-                    print("[SYSTEM] TOR routing enabled")
-                else:
-                    print("[ERROR] Could not connect to TOR. Make sure it's running on port 9050.")
-            else:
-                self.use_tor = False
-                print("[SYSTEM] TOR routing disabled")
-        elif cmd == '/clear':
-            os.system('clear' if platform.system() != 'Windows' else 'cls')
-            self.print_banner()
-        else:
-            print(f"[SYSTEM] Unknown command: {cmd}. Type '/help' for available commands.")
-        
-        print("> ", end="", flush=True)
-    
-    def show_info(self):
-        """displays connection information"""
-        info = f"""
---- Connection Info ---
-Channel: {self.channel}
-Nickname: {self.nick}
-Connected: {self.is_ready_to_send}
-Name Encryption: {self.encrypt_names}
-Code Rotation: {self.use_rotation}
-TOR Enabled: {self.use_tor}
-"""
-        print(info)
-    
-    def show_settings(self):
-        """displays current settings"""
-        settings = f"""
---- Current Settings ---
-Channel: {self.channel}
-Nickname: {self.nick}
-Name Encryption: {'Yes' if self.encrypt_names else 'No'}
-Code Rotation: {'Yes' if self.use_rotation else 'No'}
-TOR Routing: {'Yes' if self.use_tor else 'No'}
-TOR Port: {self.tor_port if self.use_tor else 'N/A'}
-"""
-        print(settings)
-    
-    def check_tor_connection(self):
-        """checks if tor is running and accessible"""
-        try:
-            sock = socks.socksocket()
-            sock.set_proxy(socks.SOCKS5, "127.0.0.1", self.tor_port)
-            sock.settimeout(5)
-            sock.connect(("check.torproject.org", 443))
-            sock.close()
-            return True
-        except Exception:
-            return False
-    
-    def quit_app(self):
-        """stops irc thread and exits application"""
-        print("\n[SYSTEM] Disconnecting...")
-        self.running = False
-        if self.irc_thread:
-            self.irc_thread.stop()
-        print("[SYSTEM] Goodbye!")
-        sys.exit(0)
-
-                          
-
-class ThemeManager:
-    """handles application theming and system theme synchronization"""
-    
-                         
-    LIGHT_THEME = {
-        'bg': '#ffffff',
-        'fg': '#000000',
-        'frame_bg': '#f0f0f0',
-        'entry_bg': '#ffffff',
-        'entry_fg': '#000000',
-        'text_bg': '#f0f0f0',
-        'text_fg': '#000000',
-        'button_bg': '#e0e0e0',
-        'button_fg': '#000000',
-        'system_fg': '#666666',
-        'error_fg': '#cc0000',
-    }
-    
-    DARK_THEME = {
-        'bg': '#1e1e1e',
-        'fg': '#ffffff',
-        'frame_bg': '#2d2d2d',
-        'entry_bg': '#2b2b2b',
-        'entry_fg': '#ffffff',
-        'text_bg': '#222222',
-        'text_fg': '#ffffff',
-        'button_bg': '#2b2b2b',
-        'button_fg': '#ffffff',
-        'system_fg': '#cccccc',
-        'error_fg': '#ff6b6b',
-    }
-    
-    CONFIG_DIR = os.path.expanduser('~/.config/libresilent')
-    THEME_CONFIG_FILE = os.path.join(CONFIG_DIR, 'theme.json')
-    
-    @staticmethod
-    def detect_system_theme() -> str:
-        """detect system theme preference"""
-        try:
-            if platform.system() == "Linux":
-                                                 
-                result = os.popen('gsettings get org.gnome.desktop.interface gtk-application-prefer-dark-theme 2>/dev/null').read().strip()
-                return 'dark' if 'true' in result else 'light'
-            elif platform.system() == "Darwin":
-                                        
-                result = os.popen('defaults read -g AppleInterfaceStyle 2>/dev/null').read().strip()
-                return 'dark' if 'Dark' in result else 'light'
-            elif platform.system() == "Windows":
-                                                      
-                try:
-                    import winreg
-                    registry_path = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
-                    registry_key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, registry_path)
-                    value, regtype = winreg.QueryValueEx(registry_key, "AppsUseLightTheme")
-                    return 'light' if value == 1 else 'dark'
-                except:
-                    return 'light'
-        except:
-            pass
-        return 'light'
-    
-    @staticmethod
-    def load_theme_preference() -> str:
-        """load saved theme preference or auto-detect"""
-        try:
-            if os.path.exists(ThemeManager.THEME_CONFIG_FILE):
-                with open(ThemeManager.THEME_CONFIG_FILE, 'r') as f:
-                    config = json.load(f)
-                    if config.get('theme') in ['light', 'dark']:
-                        return config['theme']
-                    if config.get('auto_sync'):
-                        return ThemeManager.detect_system_theme()
-        except:
-            pass
-        return ThemeManager.detect_system_theme()
-    
-    @staticmethod
-    def save_theme_preference(theme: str, auto_sync: bool = True):
-        """save theme preference"""
-        try:
-            os.makedirs(ThemeManager.CONFIG_DIR, exist_ok=True)
-            config = {
-                'theme': theme,
-                'auto_sync': auto_sync,
-                'timestamp': datetime.datetime.now().isoformat()
-            }
-            with open(ThemeManager.THEME_CONFIG_FILE, 'w') as f:
-                json.dump(config, f, indent=2)
-        except Exception as e:
-            print(f"failed to save theme preference: {e}")
-    
-    @staticmethod
-    def get_theme_colors(theme: str) -> dict:
-        """get color scheme for theme"""
-        return ThemeManager.DARK_THEME if theme == 'dark' else ThemeManager.LIGHT_THEME
-
-                          
+SALT = b'encrypted-irc-salt-v1'
 
 def get_daily_rotation(rotation_key: str) -> str:
     """generates daily rotation string based on rotation key and current date"""
     current_date = datetime.datetime.now().strftime("%Y%m%d")
     daily_seed = f"{rotation_key}{current_date}"
     return hashlib.sha256(daily_seed.encode()).hexdigest()[:16]
+
 
 def derive_key(password: str, rotation_key: str = None, use_rotation: bool = False) -> bytes:
     """derives 256-bit encryption key from password using PBKDF2-HMAC-SHA256"""
@@ -460,11 +81,13 @@ def derive_key(password: str, rotation_key: str = None, use_rotation: bool = Fal
     )
     return base64.urlsafe_b64encode(kdf)
 
+
 def encrypt_message(message: str, key: bytes) -> str:
     """encrypts message using Fernet (AES-256-CBC)"""
     f = Fernet(key)
     encrypted_token = f.encrypt(message.encode('utf-8'))
     return encrypted_token.decode('utf-8')
+
 
 def decrypt_message(token: str, key: bytes) -> str | None:
     """decrypts message token, returns None on failure"""
@@ -475,7 +98,29 @@ def decrypt_message(token: str, key: bytes) -> str | None:
     except (InvalidToken, TypeError, Exception):
         return None
 
-                             
+
+def encrypt_message_double(message: str, key: bytes) -> str:
+    """encrypts message using AES-256-CBC twice (double encryption)"""
+    f = Fernet(key)
+    first_encrypted = f.encrypt(message.encode('utf-8'))
+    second_encrypted = f.encrypt(first_encrypted)
+    return second_encrypted.decode('utf-8')
+
+
+def decrypt_message_double(token: str, key: bytes) -> str | None:
+    """decrypts double-encrypted message, returns None on failure"""
+    try:
+        f = Fernet(key)
+        first_decrypted = f.decrypt(token.encode('utf-8'))
+        decrypted_message = f.decrypt(first_decrypted)
+        return decrypted_message.decode('utf-8')
+    except (InvalidToken, TypeError, Exception):
+        return None
+
+
+# ============================================================================
+# SETTINGS MANAGER
+# ============================================================================
 
 class SettingsManager:
     """handles encryption and persistence of application settings"""
@@ -513,23 +158,17 @@ class SettingsManager:
         """encrypts and saves settings to file"""
         try:
             SettingsManager.ensure_config_dir()
-            
             encryption_key = derive_key(password)
-            
             settings_json = json.dumps(settings_dict, indent=2)
-            
             encrypted_settings = encrypt_message(settings_json, encryption_key)
-            
             wrapper = {
                 'version': '1.0',
                 'encrypted_data': encrypted_settings,
                 'timestamp': datetime.datetime.now().isoformat()
             }
-            
             target_file = filepath or SettingsManager.DEFAULT_SETTINGS_FILE
             with open(target_file, 'w') as f:
                 json.dump(wrapper, f, indent=2)
-            
             return True
         except Exception as e:
             print(f"error saving settings: {e}")
@@ -540,929 +179,1277 @@ class SettingsManager:
         """loads and decrypts settings from file"""
         try:
             target_file = filepath or SettingsManager.DEFAULT_SETTINGS_FILE
-            
             if not os.path.exists(target_file):
                 return None
-            
             with open(target_file, 'r') as f:
                 wrapper = json.load(f)
-            
             encrypted_settings = wrapper.get('encrypted_data')
             if not encrypted_settings:
                 return None
-            
             decryption_key = derive_key(password)
-            
             decrypted_json = decrypt_message(encrypted_settings, decryption_key)
             if not decrypted_json:
                 return None
-            
             settings_dict = json.loads(decrypted_json)
             return settings_dict
         except Exception as e:
             print(f"error loading settings: {e}")
             return None
+
+
+# ============================================================================
+# THEME MANAGER
+# ============================================================================
+
+class ThemeManager:
+    """handles application theming and styling"""
+    
+    DARK_STYLESHEET = """
+    QMainWindow, QDialog, QWidget {
+        background-color: #1e1e1e;
+        color: #ffffff;
+    }
+    
+    QLineEdit, QTextEdit, QComboBox {
+        background-color: #2b2b2b;
+        color: #ffffff;
+        border: 1px solid #404040;
+        border-radius: 4px;
+        padding: 4px;
+        selection-background-color: #0d47a1;
+    }
+    
+    QPushButton {
+        background-color: #0d47a1;
+        color: #ffffff;
+        border: none;
+        border-radius: 4px;
+        padding: 6px 12px;
+        font-weight: bold;
+    }
+    
+    QPushButton:hover {
+        background-color: #1565c0;
+    }
+    
+    QPushButton:pressed {
+        background-color: #0d3a8f;
+    }
+    
+    QTabWidget::pane {
+        border: 1px solid #404040;
+    }
+    
+    QTabBar::tab {
+        background-color: #2d2d2d;
+        color: #ffffff;
+        padding: 6px 20px;
+        border: 1px solid #404040;
+    }
+    
+    QTabBar::tab:selected {
+        background-color: #0d47a1;
+        border: 1px solid #0d47a1;
+    }
+    
+    QCheckBox {
+        color: #ffffff;
+        spacing: 5px;
+    }
+    
+    QCheckBox::indicator {
+        width: 18px;
+        height: 18px;
+    }
+    
+    QCheckBox::indicator:unchecked {
+        background-color: #2b2b2b;
+        border: 1px solid #404040;
+    }
+    
+    QCheckBox::indicator:checked {
+        background-color: #0d47a1;
+        border: 1px solid #0d47a1;
+    }
+    
+    QStatusBar {
+        background-color: #2d2d2d;
+        color: #ffffff;
+        border-top: 1px solid #404040;
+    }
+    
+    QScrollBar:vertical {
+        background-color: #2b2b2b;
+        width: 12px;
+        border: none;
+    }
+    
+    QScrollBar::handle:vertical {
+        background-color: #404040;
+        border-radius: 6px;
+        min-height: 20px;
+    }
+    
+    QScrollBar::handle:vertical:hover {
+        background-color: #505050;
+    }
+    """
+    
+    LIGHT_STYLESHEET = """
+    QMainWindow, QDialog, QWidget {
+        background-color: #ffffff;
+        color: #000000;
+    }
+    
+    QLineEdit, QTextEdit, QComboBox {
+        background-color: #f5f5f5;
+        color: #000000;
+        border: 1px solid #cccccc;
+        border-radius: 4px;
+        padding: 4px;
+        selection-background-color: #2196F3;
+    }
+    
+    QPushButton {
+        background-color: #2196F3;
+        color: #ffffff;
+        border: none;
+        border-radius: 4px;
+        padding: 6px 12px;
+        font-weight: bold;
+    }
+    
+    QPushButton:hover {
+        background-color: #1976D2;
+    }
+    
+    QPushButton:pressed {
+        background-color: #1565c0;
+    }
+    
+    QTabWidget::pane {
+        border: 1px solid #e0e0e0;
+    }
+    
+    QTabBar::tab {
+        background-color: #eeeeee;
+        color: #000000;
+        padding: 6px 20px;
+        border: 1px solid #e0e0e0;
+    }
+    
+    QTabBar::tab:selected {
+        background-color: #2196F3;
+        color: #ffffff;
+        border: 1px solid #2196F3;
+    }
+    
+    QCheckBox {
+        color: #000000;
+        spacing: 5px;
+    }
+    
+    QCheckBox::indicator {
+        width: 18px;
+        height: 18px;
+    }
+    
+    QCheckBox::indicator:unchecked {
+        background-color: #f5f5f5;
+        border: 1px solid #cccccc;
+    }
+    
+    QCheckBox::indicator:checked {
+        background-color: #2196F3;
+        border: 1px solid #2196F3;
+    }
+    
+    QStatusBar {
+        background-color: #f5f5f5;
+        color: #000000;
+        border-top: 1px solid #e0e0e0;
+    }
+    
+    QScrollBar:vertical {
+        background-color: #f5f5f5;
+        width: 12px;
+        border: none;
+    }
+    
+    QScrollBar::handle:vertical {
+        background-color: #bdbdbd;
+        border-radius: 6px;
+        min-height: 20px;
+    }
+    
+    QScrollBar::handle:vertical:hover {
+        background-color: #9e9e9e;
+    }
+    """
     
     @staticmethod
-    def export_settings(settings_dict: dict, password: str, export_path: str) -> bool:
-        """exports encrypted settings to file"""
-        return SettingsManager.save_settings(settings_dict, password, export_path)
+    def detect_system_theme() -> str:
+        """detect system theme preference"""
+        try:
+            if platform.system() == "Linux":
+                result = os.popen('gsettings get org.gnome.desktop.interface gtk-application-prefer-dark-theme 2>/dev/null').read().strip()
+                return 'dark' if 'true' in result else 'light'
+            elif platform.system() == "Darwin":
+                result = os.popen('defaults read -g AppleInterfaceStyle 2>/dev/null').read().strip()
+                return 'dark' if 'Dark' in result else 'light'
+            elif platform.system() == "Windows":
+                try:
+                    import winreg
+                    registry_path = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
+                    registry_key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, registry_path)
+                    value, regtype = winreg.QueryValueEx(registry_key, "AppsUseLightTheme")
+                    return 'light' if value == 1 else 'dark'
+                except:
+                    return 'light'
+        except:
+            pass
+        return 'light'
     
     @staticmethod
-    def import_settings(password: str, import_path: str) -> dict | None:
-        """imports encrypted settings from file"""
-        return SettingsManager.load_settings(password, import_path)
+    def get_stylesheet(theme: str) -> str:
+        """get stylesheet for theme"""
+        return ThemeManager.DARK_STYLESHEET if theme == 'dark' else ThemeManager.LIGHT_STYLESHEET
 
-                                
 
-class IRCHandler(threading.Thread):
-    """
-    Handles the raw socket connection to the IRC server in a separate thread
-    to avoid blocking the main GUI.
-    """
-    def __init__(self, server, port, nick, channel, gui_queue, use_tor=False, tor_port=9050):
+# ============================================================================
+# IRC HANDLER
+# ============================================================================
+
+class IRCHandler(QThread):
+    """Handles IRC connection in a separate thread"""
+    
+    message_received = pyqtSignal(str, str)  # sender, message
+    system_message = pyqtSignal(str)  # message
+    system_error = pyqtSignal(str)  # error message
+    connected = pyqtSignal()  # when successfully joined channel
+    
+    def __init__(self, server, port, nick, channel, use_tor=False, tor_port=9050):
         super().__init__()
         self.server = server
         self.port = port
         self.nick = nick
         self.channel = channel
-        self.gui_queue = gui_queue                                              
         self.use_tor = use_tor
         self.tor_port = tor_port
-
+        self.running = True
+        
         if self.use_tor:
             self.sock = socks.socksocket()
             self.sock.set_proxy(socks.SOCKS5, "127.0.0.1", self.tor_port)
         else:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            
-        self.running = True
-                                                                    
+        
         self.sock.settimeout(5)
-
+    
     def run(self):
-        """Main thread loop: connect, join, and listen for messages."""
+        """Main thread loop"""
         try:
             self.sock.connect((self.server, self.port))
             self.send_command(f"NICK {self.nick}")
             self.send_command(f"USER {self.nick} 0 * :{self.nick}")
-
-                                                                     
+            
             while self.running:
                 try:
-                                                
                     data = self.sock.recv(4096).decode('utf-8')
                 except socket.timeout:
-                                                                                             
                     continue
-
+                
                 if not data:
                     break
-
+                
                 for line in data.splitlines():
-                    if "001" in line:                               
-                        self.gui_queue.put(('SYSTEM_MESSAGE', f"Successfully joined {self.channel} on {self.server}."))
+                    if "001" in line:
+                        self.connected.emit()
                         self.send_command(f"JOIN {self.channel}")
-
+                    
                     if line.startswith("PING"):
                         self.handle_ping(line)
                     elif "PRIVMSG" in line:
                         self.handle_privmsg(line)
-                                                                           
                     elif not line.startswith(":"):
-                        self.gui_queue.put(('SYSTEM_MESSAGE', line))
-
+                        self.system_message.emit(line)
+        
         except Exception as e:
-                                                               
-            error_message = f"Failed to connect or connection lost: {e}"
-            self.gui_queue.put(('SYSTEM_ERROR', error_message))
+            self.system_error.emit(f"Failed to connect: {e}")
         finally:
             self.stop()
-
+    
     def send_command(self, command):
-        """Sends a raw command to the IRC server."""
+        """Sends a raw command to the IRC server"""
         if self.running:
             try:
                 self.sock.send(f"{command}\r\n".encode('utf-8'))
-            except BrokenPipeError:
-                self.stop()
-
+            except:
+                pass
+    
     def send_privmsg(self, message):
-        """Sends an encrypted message to the channel."""
+        """Sends an encrypted message to the channel"""
         self.send_command(f"PRIVMSG {self.channel} :{message}")
-
+    
     def handle_ping(self, line):
-        """Responds to server PINGs to keep the connection alive."""
+        """Responds to server PINGs"""
         server = line.split(":")[-1]
         self.send_command(f"PONG :{server}")
-
+    
     def handle_privmsg(self, line):
-        """Parses a PRIVMSG and puts the sender/message in the GUI queue."""
+        """Parses a PRIVMSG"""
         try:
-                                                                          
             sender = line.split("!")[0][1:]
             message_content = line.split(":", 2)[-1]
-
-                                                                         
+            
             if self.channel in line and sender != self.nick:
-                self.gui_queue.put((sender, message_content))
+                self.message_received.emit(sender, message_content)
         except Exception as e:
             print(f"Error parsing PRIVMSG: {e}")
-
+    
     def stop(self):
-        """Stops the connection thread."""
+        """Stops the connection thread"""
         self.running = False
         try:
-                                                                  
             if self.sock.fileno() != -1:
                 self.sock.send(f"QUIT :Client disconnecting\r\n".encode('utf-8'))
                 self.sock.shutdown(socket.SHUT_RDWR)
                 self.sock.close()
-        except Exception:
-            pass                                              
-
-                              
-
-class EncryptedIRCClient:
-    def apply_theme(self, theme: str):
-        """applies theme to application"""
-        self.colors = ThemeManager.get_theme_colors(theme)
-        self.root.config(bg=self.colors['bg'])
-                                                                        
-        try:
-            style = ttk.Style()
-                                                                     
-                                                                                 
-            style.configure('TFrame', background=self.colors['frame_bg'])
-            style.configure('TLabel', background=self.colors['frame_bg'], foreground=self.colors['fg'])
-            style.configure('TButton', background=self.colors['button_bg'], foreground=self.colors['button_fg'])
-            style.configure('TEntry', fieldbackground=self.colors['entry_bg'], foreground=self.colors['entry_fg'])
-            style.configure('TCheckbutton', background=self.colors['frame_bg'], foreground=self.colors['fg'])
-        except Exception:
+        except:
             pass
 
-                                                                                  
-                                                                                                 
+
+# ============================================================================
+# CONNECTION SETTINGS DIALOG
+# ============================================================================
+
+class ConnectionSettingsDialog(QDialog):
+    """Modern dialog for connection settings"""
+    
+    def __init__(self, parent=None, theme='dark'):
+        super().__init__(parent)
+        self.theme = theme
+        self.setWindowTitle("LibreSilent - Connection Settings")
+        self.setGeometry(100, 100, 600, 700)
+        self.init_ui()
+        self.apply_theme()
+    
+    def init_ui(self):
+        """Initialize UI components"""
+        layout = QVBoxLayout()
+        
+        # Title
+        title = QLabel("Connection Settings")
+        title_font = QFont()
+        title_font.setPointSize(16)
+        title_font.setBold(True)
+        title.setFont(title_font)
+        layout.addWidget(title)
+        
+        # Create tabs
+        tabs = QTabWidget()
+        
+        # Server tab
+        server_tab = QWidget()
+        server_layout = QVBoxLayout()
+        
+        server_layout.addWidget(QLabel("IRC Server:"))
+        self.server_input = QLineEdit()
+        self.server_input.setText("irc.libera.chat")
+        server_layout.addWidget(self.server_input)
+        
+        server_layout.addWidget(QLabel("Port:"))
+        self.port_input = QLineEdit()
+        self.port_input.setText("6667")
+        server_layout.addWidget(self.port_input)
+        
+        server_layout.addWidget(QLabel("Nickname:"))
+        self.nick_input = QLineEdit()
+        self.nick_input.setText("EncryptedUser")
+        server_layout.addWidget(self.nick_input)
+        
+        server_layout.addStretch()
+        server_tab.setLayout(server_layout)
+        tabs.addTab(server_tab, "Server")
+        
+        # Security tab
+        security_tab = QWidget()
+        security_layout = QVBoxLayout()
+        
+        security_layout.addWidget(QLabel("Encryption Key:"))
+        self.key_input = QLineEdit()
+        self.key_input.setEchoMode(QLineEdit.Password)
+        security_layout.addWidget(self.key_input)
+        
+        self.rotation_check = QCheckBox("Enable Daily Code Rotation")
+        security_layout.addWidget(self.rotation_check)
+        
+        security_layout.addWidget(QLabel("Rotation Key (if enabled):"))
+        self.rotation_key_input = QLineEdit()
+        self.rotation_key_input.setEchoMode(QLineEdit.Password)
+        self.rotation_key_input.setEnabled(False)
+        security_layout.addWidget(self.rotation_key_input)
+        self.rotation_check.stateChanged.connect(
+            lambda: self.rotation_key_input.setEnabled(self.rotation_check.isChecked())
+        )
+        
+        self.double_encrypt_check = QCheckBox("Enable Double Encryption")
+        security_layout.addWidget(self.double_encrypt_check)
+        
+        self.encrypt_names_check = QCheckBox("Encrypt Usernames")
+        self.encrypt_names_check.setChecked(True)
+        security_layout.addWidget(self.encrypt_names_check)
+        
+        security_layout.addStretch()
+        security_tab.setLayout(security_layout)
+        tabs.addTab(security_tab, "Security")
+        
+        # Channel tab
+        channel_tab = QWidget()
+        channel_layout = QVBoxLayout()
+        
+        self.auto_channel_check = QCheckBox("Use Auto-Generated Channel")
+        self.auto_channel_check.setChecked(True)
+        channel_layout.addWidget(self.auto_channel_check)
+        
+        channel_layout.addWidget(QLabel("Custom Channel (if disabled):"))
+        self.channel_input = QLineEdit()
+        self.channel_input.setEnabled(False)
+        channel_layout.addWidget(self.channel_input)
+        self.auto_channel_check.stateChanged.connect(
+            lambda: self.channel_input.setEnabled(not self.auto_channel_check.isChecked())
+        )
+        
+        channel_layout.addStretch()
+        channel_tab.setLayout(channel_layout)
+        tabs.addTab(channel_tab, "Channel")
+        
+        # Network tab
+        network_tab = QWidget()
+        network_layout = QVBoxLayout()
+        
+        self.tor_check = QCheckBox("Enable TOR Routing")
+        network_layout.addWidget(self.tor_check)
+        
+        network_layout.addWidget(QLabel("TOR Port:"))
+        self.tor_port_input = QLineEdit()
+        self.tor_port_input.setText("9050")
+        self.tor_port_input.setEnabled(False)
+        network_layout.addWidget(self.tor_port_input)
+        self.tor_check.stateChanged.connect(
+            lambda: self.tor_port_input.setEnabled(self.tor_check.isChecked())
+        )
+        
+        network_layout.addStretch()
+        network_tab.setLayout(network_layout)
+        tabs.addTab(network_tab, "Network")
+        
+        layout.addWidget(tabs)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        self.connect_button = QPushButton("Connect")
+        self.cancel_button = QPushButton("Cancel")
+        
+        self.connect_button.clicked.connect(self.accept)
+        self.cancel_button.clicked.connect(self.reject)
+        
+        button_layout.addStretch()
+        button_layout.addWidget(self.connect_button)
+        button_layout.addWidget(self.cancel_button)
+        layout.addLayout(button_layout)
+        
+        self.setLayout(layout)
+    
+    def apply_theme(self):
+        """Apply theme to dialog"""
+        stylesheet = ThemeManager.get_stylesheet(self.theme)
+        self.setStyleSheet(stylesheet)
+    
+    def get_settings(self):
+        """Get settings from dialog"""
+        return {
+            'server': self.server_input.text(),
+            'port': int(self.port_input.text()),
+            'nick': self.nick_input.text(),
+            'key': self.key_input.text(),
+            'rotation_key': self.rotation_key_input.text() if self.rotation_check.isChecked() else None,
+            'use_rotation': self.rotation_check.isChecked(),
+            'double_encrypt': self.double_encrypt_check.isChecked(),
+            'encrypt_names': self.encrypt_names_check.isChecked(),
+            'auto_channel': self.auto_channel_check.isChecked(),
+            'channel': self.channel_input.text() if not self.auto_channel_check.isChecked() else None,
+            'use_tor': self.tor_check.isChecked(),
+            'tor_port': int(self.tor_port_input.text()) if self.tor_check.isChecked() else 9050,
+        }
+
+
+# ============================================================================
+# SETTINGS DIALOG
+# ============================================================================
+
+class SettingsDialog(QDialog):
+    """Settings panel for managing connections and preferences"""
+    
+    def __init__(self, parent=None, theme='dark'):
+        super().__init__(parent)
+        self.theme = theme
+        self.setWindowTitle("LibreSilent - Settings")
+        self.setGeometry(100, 100, 700, 600)
+        self.init_ui()
+        self.apply_theme()
+    
+    def init_ui(self):
+        """Initialize settings UI"""
+        layout = QVBoxLayout()
+        
+        # Title
+        title = QLabel("Settings")
+        title_font = QFont()
+        title_font.setPointSize(16)
+        title_font.setBold(True)
+        title.setFont(title_font)
+        layout.addWidget(title)
+        
+        # Create tabs
+        tabs = QTabWidget()
+        
+        # Saved Connections tab
+        connections_tab = self.create_connections_tab()
+        tabs.addTab(connections_tab, "Saved Connections")
+        
+        # Import/Export tab
+        import_export_tab = self.create_import_export_tab()
+        tabs.addTab(import_export_tab, "Import/Export")
+        
+        # Preferences tab
+        preferences_tab = self.create_preferences_tab()
+        tabs.addTab(preferences_tab, "Preferences")
+        
+        layout.addWidget(tabs)
+        
+        # Close button
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        close_button = QPushButton("Close")
+        close_button.clicked.connect(self.accept)
+        close_button.setMaximumWidth(100)
+        button_layout.addWidget(close_button)
+        layout.addLayout(button_layout)
+        
+        self.setLayout(layout)
+    
+    def create_connections_tab(self) -> QWidget:
+        """Create saved connections management tab"""
+        tab = QWidget()
+        layout = QVBoxLayout()
+        
+        # Connections list
+        layout.addWidget(QLabel("Saved Connections:"))
+        
+        self.connections_list = QTextEdit()
+        self.connections_list.setReadOnly(True)
+        self.connections_list.setPlaceholderText("No saved connections yet.\n\nUse the buttons below to save or load connections.")
+        layout.addWidget(self.connections_list)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        
+        save_button = QPushButton("Save Current Connection")
+        save_button.clicked.connect(self.save_connection)
+        button_layout.addWidget(save_button)
+        
+        load_button = QPushButton("Load Connection")
+        load_button.clicked.connect(self.load_connection)
+        button_layout.addWidget(load_button)
+        
+        delete_button = QPushButton("Delete Selected")
+        delete_button.clicked.connect(self.delete_connection)
+        button_layout.addWidget(delete_button)
+        
+        layout.addLayout(button_layout)
+        
+        # Load saved connections list
+        self.refresh_connections_list()
+        
+        tab.setLayout(layout)
+        return tab
+    
+    def create_import_export_tab(self) -> QWidget:
+        """Create import/export settings tab"""
+        tab = QWidget()
+        layout = QVBoxLayout()
+        
+        # Export section
+        export_group_layout = QVBoxLayout()
+        export_label = QLabel("Export Settings")
+        export_label.setFont(QFont("Arial", 11, QFont.Bold))
+        export_group_layout.addWidget(export_label)
+        
+        export_info = QLabel("Export your encrypted connection settings to a file.")
+        export_info.setStyleSheet("color: #888888; font-size: 10px;")
+        export_group_layout.addWidget(export_info)
+        
+        export_button = QPushButton("Export Settings File")
+        export_button.clicked.connect(self.export_settings)
+        export_group_layout.addWidget(export_button)
+        
+        layout.addLayout(export_group_layout)
+        layout.addSpacing(20)
+        
+        # Import section
+        import_group_layout = QVBoxLayout()
+        import_label = QLabel("Import Settings")
+        import_label.setFont(QFont("Arial", 11, QFont.Bold))
+        import_group_layout.addWidget(import_label)
+        
+        import_info = QLabel("Import encrypted connection settings from a file.")
+        import_info.setStyleSheet("color: #888888; font-size: 10px;")
+        import_group_layout.addWidget(import_info)
+        
+        import_button = QPushButton("Import Settings File")
+        import_button.clicked.connect(self.import_settings)
+        import_group_layout.addWidget(import_button)
+        
+        layout.addLayout(import_group_layout)
+        layout.addStretch()
+        
+        tab.setLayout(layout)
+        return tab
+    
+    def create_preferences_tab(self) -> QWidget:
+        """Create preferences tab"""
+        tab = QWidget()
+        layout = QVBoxLayout()
+        
+        # Display section
+        display_label = QLabel("Display")
+        display_label.setFont(QFont("Arial", 11, QFont.Bold))
+        layout.addWidget(display_label)
+        
+        self.show_timestamps_check = QCheckBox("Show message timestamps")
+        self.show_timestamps_check.setChecked(True)
+        layout.addWidget(self.show_timestamps_check)
+        
+        layout.addSpacing(20)
+        
+        # Notifications section
+        notif_label = QLabel("Notifications")
+        notif_label.setFont(QFont("Arial", 11, QFont.Bold))
+        layout.addWidget(notif_label)
+        
+        self.enable_notifications_check = QCheckBox("Enable desktop notifications")
+        self.enable_notifications_check.setChecked(HAS_NOTIFICATIONS)
+        self.enable_notifications_check.setEnabled(HAS_NOTIFICATIONS)
+        layout.addWidget(self.enable_notifications_check)
+        
+        layout.addSpacing(20)
+        
+        # Connection section
+        connection_label = QLabel("Connection")
+        connection_label.setFont(QFont("Arial", 11, QFont.Bold))
+        layout.addWidget(connection_label)
+        
+        self.auto_save_settings_check = QCheckBox("Auto-save connection settings")
+        layout.addWidget(self.auto_save_settings_check)
+        
+        layout.addSpacing(10)
+        save_info = QLabel("When checked, connection settings will be automatically saved after successful connection.")
+        save_info.setStyleSheet("color: #888888; font-size: 9px;")
+        save_info.setWordWrap(True)
+        layout.addWidget(save_info)
+        
+        layout.addStretch()
+        
+        tab.setLayout(layout)
+        return tab
+    
+    def refresh_connections_list(self):
+        """Refresh the connections list display"""
+        config_dir = SettingsManager.CONFIG_DIR
+        connections_text = ""
+        
         try:
-            if hasattr(self, 'settings_frame'):
-                self.settings_frame.config(bg=self.colors['frame_bg'])
-            if hasattr(self, 'bottom_frame'):
-                self.bottom_frame.config(bg=self.colors['frame_bg'])
-            if hasattr(self, 'chat_window'):
-                                                                                
-                self.chat_window.config(bg=self.colors['text_bg'], fg=self.colors['text_fg'], insertbackground=self.colors['text_fg'])
-                                 
-            for name in ('message_entry','server_entry','port_entry','nick_entry','channel_entry'):
-                if hasattr(self, name):
-                    w = getattr(self, name)
-                    try:
-                        w.config(bg=self.colors['entry_bg'], fg=self.colors['entry_fg'], insertbackground=self.colors['entry_fg'])
-                    except Exception:
-                        pass
-            for name in ('custom_channel_button','encrypt_names_button','tor_button','rotation_button','connect_button','send_button'):
-                if hasattr(self, name):
-                    w = getattr(self, name)
-                    try:
-                        w.config(bg=self.colors['button_bg'], fg=self.colors['button_fg'], activebackground=self.colors['entry_bg'])
-                    except Exception:
-                        pass
-        except Exception:
+            if os.path.exists(config_dir):
+                files = [f for f in os.listdir(config_dir) if f.endswith('.json') and f != 'settings.json']
+                if files:
+                    for filename in files:
+                        filepath = os.path.join(config_dir, filename)
+                        try:
+                            with open(filepath, 'r') as f:
+                                data = json.load(f)
+                                timestamp = data.get('timestamp', 'Unknown')
+                                connections_text += f"• {filename}\n  Saved: {timestamp}\n\n"
+                        except:
+                            connections_text += f"• {filename} (corrupted)\n\n"
+        except:
             pass
-    
-    def get_frame_style(self) -> dict:
-        """returns frame styling kwargs"""
-        return {
-            'bg': self.colors['frame_bg']
-        }
-    
-    def get_label_style(self) -> dict:
-        """returns label styling kwargs"""
-        return {
-            'bg': self.colors['frame_bg'],
-            'fg': self.colors['fg']
-        }
-    
-    def get_entry_style(self) -> dict:
-        """returns entry styling kwargs"""
-        return {
-            'bg': self.colors['entry_bg'],
-            'fg': self.colors['entry_fg'],
-            'insertbackground': self.colors['entry_fg']
-        }
-    
-    def get_button_style(self) -> dict:
-        """returns button styling kwargs"""
-        return {
-            'bg': self.colors['button_bg'],
-            'fg': self.colors['button_fg'],
-            'activebackground': self.colors['entry_bg'],
-            'activeforeground': self.colors['button_fg']
-        }
-    
-    def get_text_style(self) -> dict:
-        """returns text widget styling kwargs"""
-        return {
-            'bg': self.colors['text_bg'],
-            'fg': self.colors['text_fg'],
-            'insertbackground': self.colors['text_fg']
-        }
-    
-    def show_welcome_dialog(self):
-        """displays welcome dialog with app instructions"""
-        config_path = os.path.expanduser('~/.config/libresilent/config.json')
-        if os.path.exists(config_path):
-            with open(config_path, 'r') as f:
-                config = json.load(f)
-                if config.get('skip_welcome', False):
-                    return
-
-        dialog = tk.Toplevel(self.root)
-        dialog.title("Welcome to LibreSilent")
-        dialog.geometry("600x500")
-        dialog.transient(self.root)
-        dialog.grab_set()
-        dialog.config(bg=self.colors['bg'])
-
-                      
-        welcome_text = """Welcome to LibreSilent - Secure IRC Communication
-
-HOW TO USE:
-1. Basic Setup:
-   • Enter a server (default: irc.libera.chat)
-   • Choose a nickname
-   • Share your encryption key with your intended contact
-   
-2. Security Features:
-   • Name Encryption: Toggle to encrypt usernames (on by default)
-   • Custom Channel: Create your own channel or use auto-generated
-   • TOR Routing: Optional anonymous routing through TOR network
-   
-3. Connecting:
-   • Click 'Connect' and enter your shared encryption key
-   • Both users must use the same encryption key to communicate
-   • The channel will be automatically generated from your key
-   
-4. Privacy Features:
-   • All messages are encrypted end-to-end
-   • Notifications appear for new messages
-   • System tray alerts keep you informed
-   
-IMPORTANT:
-• Keep your encryption key secure and private
-• Both users must use identical encryption keys
-• TOR requires separate installation if needed
-• Custom channels are less secure than auto-generated ones
-
-For maximum security:
-1. Use auto-generated channels
-2. Keep name encryption enabled
-3. Use unique, strong encryption keys
-4. Consider using TOR for additional anonymity"""
-
-        frame = ttk.Frame(dialog, padding="10")
-        frame.pack(fill=tk.BOTH, expand=True)
-
-        text_widget = scrolledtext.ScrolledText(frame, wrap=tk.WORD, width=70, height=20, **self.get_text_style())
-        text_widget.pack(pady=10)
-        text_widget.insert(tk.END, welcome_text)
-        text_widget.config(state='disabled')
-
-        var = tk.BooleanVar()
-        check = ttk.Checkbutton(frame, text="Don't show this message again", variable=var)
-        check.pack(pady=5)
-
-        def on_close():
-            if var.get():
-                os.makedirs(os.path.dirname(config_path), exist_ok=True)
-                with open(config_path, 'w') as f:
-                    json.dump({'skip_welcome': True}, f)
-            dialog.destroy()
-
-        close_button = ttk.Button(frame, text="Got it!", command=on_close)
-        close_button.pack(pady=10)
-
-        dialog.update_idletasks()
-        width = dialog.winfo_width()
-        height = dialog.winfo_height()
-        x = (dialog.winfo_screenwidth() // 2) - (width // 2)
-        y = (dialog.winfo_screenheight() // 2) - (height // 2)
-        dialog.geometry(f'{width}x{height}+{x}+{y}')
-
-    def create_menu_bar(self):
-        """creates menu bar with File, Edit, View, and Help menus"""
-        menubar = tk.Menu(self.root)
-        self.root.config(menu=menubar)
-
-                   
-        file_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="File", menu=file_menu)
-        file_menu.add_command(label="New", command=self.menu_new)
-        file_menu.add_command(label="Open", command=self.menu_open)
-        file_menu.add_command(label="Save", command=self.menu_save)
-        file_menu.add_command(label="Save As", command=self.menu_save_as)
-        file_menu.add_separator()
-        file_menu.add_command(label="Exit", command=self.on_closing)
-
-                   
-        edit_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="Edit", menu=edit_menu)
-        edit_menu.add_command(label="Undo", command=self.menu_undo)
-        edit_menu.add_command(label="Redo", command=self.menu_redo)
-        edit_menu.add_separator()
-        edit_menu.add_command(label="Cut", command=self.menu_cut)
-        edit_menu.add_command(label="Copy", command=self.menu_copy)
-        edit_menu.add_command(label="Paste", command=self.menu_paste)
-        edit_menu.add_separator()
-        edit_menu.add_command(label="Select All", command=self.menu_select_all)
-        edit_menu.add_command(label="Clear", command=self.menu_clear)
-
-                   
-        view_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="View", menu=view_menu)
-        view_menu.add_command(label="Clear Chat", command=self.menu_clear_chat)
-        view_menu.add_separator()
-        view_menu.add_command(label="Light Theme", command=lambda: self.set_theme('light'))
-        view_menu.add_command(label="Dark Theme", command=lambda: self.set_theme('dark'))
-        view_menu.add_command(label="System Default", command=lambda: self.set_theme('auto'))
-        view_menu.add_separator()
-        view_menu.add_command(label="Settings", command=self.menu_settings)
-
-                   
-        help_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="Help", menu=help_menu)
-        help_menu.add_command(label="About", command=self.menu_about)
-        help_menu.add_command(label="Help Contents", command=self.menu_help)
-
-    def set_theme(self, theme: str):
-        """sets application theme and saves preference"""
-        if theme == 'auto':
-            actual_theme = ThemeManager.detect_system_theme()
+        
+        if connections_text:
+            self.connections_list.setText(connections_text)
         else:
-            actual_theme = theme
-        
-        self.current_theme = theme
-        self.apply_theme(actual_theme)
-        ThemeManager.save_theme_preference(theme, theme == 'auto')
-        self.display_message_system(f"theme changed to {actual_theme}")
+            self.connections_list.setText("No saved connections yet.\n\nUse the buttons below to save or load connections.")
     
-    def menu_new(self):
-        """placeholder for new menu item"""
-        messagebox.showinfo("New", "New document - placeholder")
-
-    def menu_open(self):
-        """placeholder for open menu item"""
-        messagebox.showinfo("Open", "Open file - placeholder")
-
-    def menu_save(self):
-        """Saves current settings to the default encrypted settings file."""
-        if not self.nick:
-            messagebox.showwarning("Warning", "No connection configured. Please configure connection first.")
+    def save_connection(self):
+        """Save current connection to file"""
+        if not hasattr(self.parent(), 'settings') or not self.parent().settings:
+            QMessageBox.warning(self, "Warning", "No active connection to save. Connect first.")
             return
         
-                                                        
-        password = simpledialog.askstring("Master Password", 
-            "Enter a master password to encrypt these settings:", show='*')
-        if not password:
-            messagebox.showwarning("Cancelled", "Settings save cancelled.")
-            return
-        
-                                    
-        settings = SettingsManager.create_settings_dict(
-            server=self.server_entry.get(),
-            port=int(self.port_entry.get()),
-            nick=self.nick_entry.get(),
-            channel=self.channel_entry.get(),
-            password="",                          
-            rotation_key=self.rotation_key,
-            use_rotation=self.use_rotation,
-            use_tor=self.use_tor,
-            encrypt_names=self.encrypt_names
-        )
-        
-                       
-        if SettingsManager.save_settings(settings, password):
-            messagebox.showinfo("Success", "Settings saved successfully to:\n" + 
-                              SettingsManager.DEFAULT_SETTINGS_FILE)
-            self.display_message_system("Settings saved to default location.")
-        else:
-            messagebox.showerror("Error", "Failed to save settings.")
-
-    def menu_save_as(self):
-        """Saves current settings to a custom file location."""
-        if not self.nick:
-            messagebox.showwarning("Warning", "No connection configured. Please configure connection first.")
-            return
-        
-                               
-        filepath = filedialog.asksaveasfilename(
-            defaultextension=".lsconf",
-            filetypes=[("LibreSilent Config", "*.lsconf"), ("JSON files", "*.json"), ("All files", "*.*")]
-        )
-        
-        if not filepath:
-            return
-        
-                                    
-        password = simpledialog.askstring("Master Password", 
-            "Enter a master password to encrypt these settings:", show='*')
-        if not password:
-            messagebox.showwarning("Cancelled", "Settings export cancelled.")
-            return
-        
-                                    
-        settings = SettingsManager.create_settings_dict(
-            server=self.server_entry.get(),
-            port=int(self.port_entry.get()),
-            nick=self.nick_entry.get(),
-            channel=self.channel_entry.get(),
-            password="",                          
-            rotation_key=self.rotation_key,
-            use_rotation=self.use_rotation,
-            use_tor=self.use_tor,
-            encrypt_names=self.encrypt_names
-        )
-        
-                         
-        if SettingsManager.export_settings(settings, password, filepath):
-            messagebox.showinfo("Success", f"Settings exported successfully to:\n{filepath}")
-            self.display_message_system(f"Settings exported to {filepath}")
-        else:
-            messagebox.showerror("Error", "Failed to export settings.")
-
-    def menu_undo(self):
-        """placeholder for undo menu item"""
-        messagebox.showinfo("Undo", "Undo action - placeholder")
-
-    def menu_redo(self):
-        """placeholder for redo menu item"""
-        messagebox.showinfo("Redo", "Redo action - placeholder")
-
-    def menu_cut(self):
-        """placeholder for cut menu item"""
-        messagebox.showinfo("Cut", "Cut text - placeholder")
-
-    def menu_copy(self):
-        """placeholder for copy menu item"""
-        messagebox.showinfo("Copy", "Copy text - placeholder")
-
-    def menu_paste(self):
-        """placeholder for paste menu item"""
-        messagebox.showinfo("Paste", "Paste text - placeholder")
-
-    def menu_select_all(self):
-        """placeholder for select all menu item"""
-        messagebox.showinfo("Select All", "Select all text - placeholder")
-
-    def menu_clear(self):
-        """placeholder for clear menu item"""
-        messagebox.showinfo("Clear", "Clear text - placeholder")
-
-    def menu_clear_chat(self):
-        """clears chat window"""
-        self.chat_window.config(state='normal')
-        self.chat_window.delete(1.0, tk.END)
-        self.chat_window.config(state='disabled')
-        self.display_message_system("Chat cleared.")
-
-    def menu_settings(self):
-        """displays settings dialog with import/export options"""
-        settings_window = tk.Toplevel(self.root)
-        settings_window.title("Settings & Configuration")
-        settings_window.geometry("400x250")
-        settings_window.transient(self.root)
-        settings_window.config(bg=self.colors['bg'])
-        
-        frame = ttk.Frame(settings_window, padding="20")
-        frame.pack(fill=tk.BOTH, expand=True)
-        
-        ttk.Label(frame, text="Settings Management", font=("Arial", 14, "bold")).pack(pady=10)
-        
-        def on_import():
-            self.import_settings_from_file()
-            settings_window.destroy()
-        
-        ttk.Button(frame, text="Import Settings from File", command=on_import).pack(fill=tk.X, pady=5)
-        
-        def on_export():
-            self.menu_save_as()
-            settings_window.destroy()
-        
-        ttk.Button(frame, text="Export Settings to File", command=on_export).pack(fill=tk.X, pady=5)
-        
-        def on_save():
-            self.menu_save()
-            settings_window.destroy()
-        
-        ttk.Button(frame, text="Save to Default Location", command=on_save).pack(fill=tk.X, pady=5)
-        
-        def on_view():
-            self.view_current_settings()
-        
-        ttk.Button(frame, text="View Current Settings", command=on_view).pack(fill=tk.X, pady=5)
-        
-        ttk.Button(frame, text="Close", command=settings_window.destroy).pack(fill=tk.X, pady=5)
-
-    def menu_about(self):
-        """displays about dialog"""
-        messagebox.showinfo("About", "LibreSilent - Encrypted IRC Client\nVersion 1.0\n\nA secure communication tool using encrypted IRC.")
-
-    def menu_help(self):
-        """displays help/welcome dialog"""
-        self.show_welcome_dialog()
-
-    def import_settings_from_file(self):
-        """imports settings from encrypted file and populates ui"""
-        filepath = filedialog.askopenfilename(
-            filetypes=[("LibreSilent Config", "*.lsconf"), ("JSON files", "*.json"), ("All files", "*.*")]
-        )
-        
-        if not filepath:
-            return
-        
-        password = simpledialog.askstring("Master Password", 
-            "Enter the master password to decrypt these settings:", show='*')
-        if not password:
-            messagebox.showwarning("Cancelled", "Settings import cancelled.")
-            return
-        
-        settings = SettingsManager.import_settings(password, filepath)
-        
-        if not settings:
-            messagebox.showerror("Error", "Failed to import settings. Password may be incorrect.")
+        name, ok = QInputDialog.getText(self, "Save Connection", "Connection name:")
+        if not ok or not name:
             return
         
         try:
-            self.server_entry.config(state='normal')
-            self.server_entry.delete(0, tk.END)
-            self.server_entry.insert(0, settings.get('server', 'irc.libera.chat'))
+            settings = self.parent().settings.copy()
+            SettingsManager.ensure_config_dir()
             
-            self.port_entry.config(state='normal')
-            self.port_entry.delete(0, tk.END)
-            self.port_entry.insert(0, str(settings.get('port', 6667)))
+            filepath = os.path.join(SettingsManager.CONFIG_DIR, f"{name}.json")
+            password, ok = QInputDialog.getText(self, "Encryption Password", "Enter password for this connection:", QLineEdit.Password)
+            if not ok:
+                return
             
-            self.nick_entry.config(state='normal')
-            self.nick_entry.delete(0, tk.END)
-            self.nick_entry.insert(0, settings.get('nick', 'EncryptedUser'))
-            
-            self.channel_entry.config(state='normal')
-            self.channel_entry.delete(0, tk.END)
-            self.channel_entry.insert(0, settings.get('channel', ''))
-            self.channel_entry.config(state='disabled')
-            
-            self.use_tor = settings.get('use_tor', False)
-            if self.use_tor:
-                self.tor_button.config(relief=tk.SUNKEN)
+            if SettingsManager.save_settings(settings, password, filepath):
+                QMessageBox.information(self, "Success", f"Connection '{name}' saved successfully.")
+                self.refresh_connections_list()
             else:
-                self.tor_button.config(relief=tk.RAISED)
-            
-            self.encrypt_names = settings.get('encrypt_names', True)
-            if self.encrypt_names:
-                self.encrypt_names_button.config(relief=tk.SUNKEN)
-            else:
-                self.encrypt_names_button.config(relief=tk.RAISED)
-            
-            self.use_rotation = settings.get('use_rotation', False)
-            self.rotation_key = settings.get('rotation_key')
-            if self.use_rotation:
-                self.rotation_button.config(relief=tk.SUNKEN)
-            else:
-                self.rotation_button.config(relief=tk.RAISED)
-            
-            messagebox.showinfo("Success", f"Settings imported successfully from:\n{filepath}")
-            self.display_message_system(f"Settings imported from {filepath}")
+                QMessageBox.critical(self, "Error", "Failed to save connection.")
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to apply imported settings: {e}")
+            QMessageBox.critical(self, "Error", f"Error saving connection: {e}")
+    
+    def load_connection(self):
+        """Load connection from file"""
+        try:
+            config_dir = SettingsManager.CONFIG_DIR
+            if not os.path.exists(config_dir):
+                QMessageBox.warning(self, "Warning", "No saved connections found.")
+                return
+            
+            files = [f for f in os.listdir(config_dir) if f.endswith('.json') and f != 'settings.json']
+            if not files:
+                QMessageBox.warning(self, "Warning", "No saved connections found.")
+                return
+            
+            name, ok = QInputDialog.getItem(self, "Load Connection", "Select connection:", 
+                                           [f.replace('.json', '') for f in files], 0, False)
+            if not ok:
+                return
+            
+            password, ok = QInputDialog.getText(self, "Encryption Password", "Enter password for this connection:", QLineEdit.Password)
+            if not ok:
+                return
+            
+            filepath = os.path.join(config_dir, f"{name}.json")
+            settings = SettingsManager.load_settings(password, filepath)
+            
+            if settings:
+                self.parent().settings = settings
+                QMessageBox.information(self, "Success", f"Connection '{name}' loaded. Use 'Connect' to establish connection.")
+            else:
+                QMessageBox.critical(self, "Error", "Failed to load connection. Check password.")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Error loading connection: {e}")
+    
+    def delete_connection(self):
+        """Delete a saved connection"""
+        try:
+            config_dir = SettingsManager.CONFIG_DIR
+            if not os.path.exists(config_dir):
+                return
+            
+            files = [f for f in os.listdir(config_dir) if f.endswith('.json') and f != 'settings.json']
+            if not files:
+                QMessageBox.warning(self, "Warning", "No saved connections found.")
+                return
+            
+            name, ok = QInputDialog.getItem(self, "Delete Connection", "Select connection to delete:", 
+                                           [f.replace('.json', '') for f in files], 0, False)
+            if not ok:
+                return
+            
+            reply = QMessageBox.question(self, "Confirm Delete", f"Delete connection '{name}'?",
+                                        QMessageBox.Yes | QMessageBox.No)
+            if reply == QMessageBox.Yes:
+                filepath = os.path.join(config_dir, f"{name}.json")
+                os.remove(filepath)
+                QMessageBox.information(self, "Success", "Connection deleted.")
+                self.refresh_connections_list()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Error deleting connection: {e}")
+    
+    def export_settings(self):
+        """Export settings to file"""
+        try:
+            filepath, _ = QFileDialog.getSaveFileName(self, "Export Settings", "", "JSON Files (*.json)")
+            if not filepath:
+                return
+            
+            if not filepath.endswith('.json'):
+                filepath += '.json'
+            
+            password, ok = QInputDialog.getText(self, "Encryption Password", "Enter password to encrypt export:", QLineEdit.Password)
+            if not ok:
+                return
+            
+            if not hasattr(self.parent(), 'settings') or not self.parent().settings:
+                QMessageBox.warning(self, "Warning", "No active connection settings to export.")
+                return
+            
+            if SettingsManager.save_settings(self.parent().settings, password, filepath):
+                QMessageBox.information(self, "Success", f"Settings exported to {filepath}")
+            else:
+                QMessageBox.critical(self, "Error", "Failed to export settings.")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Error exporting settings: {e}")
+    
+    def import_settings(self):
+        """Import settings from file"""
+        try:
+            filepath, _ = QFileDialog.getOpenFileName(self, "Import Settings", "", "JSON Files (*.json)")
+            if not filepath:
+                return
+            
+            password, ok = QInputDialog.getText(self, "Encryption Password", "Enter password for imported settings:", QLineEdit.Password)
+            if not ok:
+                return
+            
+            settings = SettingsManager.load_settings(password, filepath)
+            if settings:
+                self.parent().settings = settings
+                QMessageBox.information(self, "Success", "Settings imported successfully. Use 'Connect' to establish connection.")
+            else:
+                QMessageBox.critical(self, "Error", "Failed to import settings. Check password and file format.")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Error importing settings: {e}")
+    
+    def apply_theme(self):
+        """Apply theme to dialog"""
+        stylesheet = ThemeManager.get_stylesheet(self.theme)
+        self.setStyleSheet(stylesheet)
 
-    def view_current_settings(self):
-        """displays current settings in readable format"""
-        settings_view = tk.Toplevel(self.root)
-        settings_view.title("Current Settings")
-        settings_view.geometry("500x400")
-        settings_view.transient(self.root)
-        settings_view.config(bg=self.colors['bg'])
+
+# ============================================================================
+# MAIN APPLICATION WINDOW
+# ============================================================================
+
+class LibreSilentQt(QMainWindow):
+    """Main application window for LibreSilent using Qt"""
+    
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("LibreSilent - Encrypted IRC Client")
+        self.setGeometry(100, 100, 1200, 800)
         
-        frame = ttk.Frame(settings_view, padding="10")
-        frame.pack(fill=tk.BOTH, expand=True)
+        # Theme
+        self.theme = ThemeManager.detect_system_theme()
         
-        text_widget = scrolledtext.ScrolledText(frame, wrap=tk.WORD, state='normal', **self.get_text_style())
-        text_widget.pack(fill=tk.BOTH, expand=True, pady=10)
-        
-        settings_text = f"""Current LibreSilent Settings
-{'='*40}
-
-SERVER CONFIGURATION:
-  Server: {self.server_entry.get()}
-  Port: {self.port_entry.get()}
-  Nick: {self.nick_entry.get()}
-  Channel: {self.channel_entry.get()}
-
-SECURITY OPTIONS:
-  Encrypt Names: {'Yes' if self.encrypt_names else 'No'}
-  Use Code Rotation: {'Yes' if self.use_rotation else 'No'}
-  Rotation Start Date: {datetime.datetime.now().strftime("%Y%m%d") if self.use_rotation else 'N/A'}
-
-NETWORK OPTIONS:
-  Use TOR: {'Yes' if self.use_tor else 'No'}
-  TOR Port: {self.tor_port if self.use_tor else 'N/A'}
-
-CUSTOM CHANNEL:
-  Using Custom Channel: {'Yes' if self.using_custom_channel else 'No'}
-
-CONNECTION STATUS:
-  Connected: {'Yes' if self.is_ready_to_send else 'No'}
-  
-NOTES:
-- Settings can be exported and imported using File > Save/Import
-- Use a strong master password when saving settings
-- Both parties must use identical encryption keys to communicate
-"""
-        text_widget.insert(1.0, settings_text)
-        text_widget.config(state='disabled')
-        
-        ttk.Button(frame, text="Close", command=settings_view.destroy).pack(pady=10)
-
-
-    def __init__(self, root):
-        self.root = root
-        self.root.title("Encrypted IRC Client")
-        self.root.attributes('-zoomed', True)
-        self.original_title = self.root.title()
-        
-                          
-        self.current_theme = ThemeManager.load_theme_preference()
-        self.apply_theme(self.current_theme)
-        
-                                 
-        self.use_tor = False
-        self.tor_port = 9050
-        
-                         
-        self.create_menu_bar()
-        
-                             
-        self.root.after(500, self.show_welcome_dialog)
-        
-                                        
-        if HAS_NOTIFICATIONS:
-            if platform.system() == "Linux":
-                notify2.init("LibreSilent")
-            elif platform.system() == "Windows":
-                self.toaster = ToastNotifier()
-
-                                      
-        self.settings_frame = tk.Frame(root, pady=5, **self.get_frame_style())
-        self.settings_frame.pack(fill='x')
-
-        tk.Label(self.settings_frame, text="Server:", **self.get_label_style()).pack(side=tk.LEFT, padx=5)
-        self.server_entry = tk.Entry(self.settings_frame, width=15, **self.get_entry_style())
-        self.server_entry.insert(0, "irc.libera.chat")
-        self.server_entry.pack(side=tk.LEFT)
-
-        tk.Label(self.settings_frame, text="Port:", **self.get_label_style()).pack(side=tk.LEFT, padx=5)
-        self.port_entry = tk.Entry(self.settings_frame, width=5, **self.get_entry_style())
-        self.port_entry.insert(0, "6667")
-        self.port_entry.pack(side=tk.LEFT)
-
-        tk.Label(self.settings_frame, text="Nick:", **self.get_label_style()).pack(side=tk.LEFT, padx=5)
-        self.nick_entry = tk.Entry(self.settings_frame, width=10, **self.get_entry_style())
-        self.nick_entry.insert(0, "EncryptedUser")
-        self.nick_entry.pack(side=tk.LEFT)
-
-        tk.Label(self.settings_frame, text="Channel:", **self.get_label_style()).pack(side=tk.LEFT, padx=5)
-        self.channel_entry = tk.Entry(self.settings_frame, width=10, **self.get_entry_style())
-        self.channel_entry.insert(0, "")
-        self.channel_entry.config(state='disabled')
-        self.channel_entry.pack(side=tk.LEFT)
-
-                               
-        self.custom_channel_button = tk.Button(self.settings_frame, text="Custom Channel", command=self.toggle_custom_channel, **self.get_button_style())
-        self.custom_channel_button.pack(side=tk.LEFT, padx=5)
-        self.using_custom_channel = False
-
-                                     
-        self.encrypt_names_button = tk.Button(self.settings_frame, text="Encrypt Names", command=self.toggle_name_encryption, **self.get_button_style())
-        self.encrypt_names_button.pack(side=tk.LEFT, padx=5)
-        self.encrypt_names = True
-        self.encrypt_names_button.config(relief=tk.SUNKEN)
-
-                                   
-        self.tor_button = tk.Button(self.settings_frame, text="Use TOR", command=self.toggle_tor, **self.get_button_style())
-        self.tor_button.pack(side=tk.LEFT, padx=5)
-
-                                     
-        self.use_rotation = False
-        self.rotation_key = None
-        self.rotation_button = tk.Button(self.settings_frame, text="Code Rotation", command=self.toggle_rotation, **self.get_button_style())
-        self.rotation_button.pack(side=tk.LEFT, padx=5)
-        
-                                   
-        self.connect_button = tk.Button(self.settings_frame, text="Connect", command=self.connect, **self.get_button_style())
-        self.connect_button.pack(side=tk.RIGHT, padx=5)
-
-                                            
-        self.chat_window = scrolledtext.ScrolledText(root, state='disabled', wrap=tk.WORD, relief=tk.SUNKEN, borderwidth=1, **self.get_text_style())
-        self.chat_window.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-
-                                              
-        self.bottom_frame = tk.Frame(root, pady=5, **self.get_frame_style())
-        self.bottom_frame.pack(fill='x')
-
-        self.message_entry = tk.Entry(self.bottom_frame, state='disabled', **self.get_entry_style())
-        self.message_entry.pack(fill='x', expand=True, side=tk.LEFT, padx=5)
-        self.message_entry.bind("<Return>", self.send_message_event)
-
-        self.send_button = tk.Button(self.bottom_frame, text="Send", command=self.send_message_event, **self.get_button_style())
-        self.send_button.pack(side=tk.RIGHT, padx=5)
-
-                                 
-        self.gui_queue = queue.Queue()
+        # State variables
         self.irc_thread = None
         self.encryption_key = None
         self.channel = None
         self.nick = None
         self.is_ready_to_send = False
-
-        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
-        self.display_message_system("Welcome! Enter server details and press Connect.")
-        self.display_message_system("You will be prompted for your shared secret key after connecting.")
-
-    def connect(self):
-        server = self.server_entry.get()
+        self.settings = {}
+        self.show_timestamps = True
+        self.notifications_enabled = HAS_NOTIFICATIONS
+        self.auto_save_enabled = False
+        
+        # Initialize UI
+        self.init_ui()
+        self.apply_theme()
+        
+        # Connect system tray
+        if HAS_NOTIFICATIONS:
+            if platform.system() == "Linux":
+                notify2.init("LibreSilent")
+            elif platform.system() == "Windows":
+                self.toaster = ToastNotifier()
+    
+    def init_ui(self):
+        """Initialize main UI"""
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        main_layout = QVBoxLayout()
+        
+        # Header
+        header = self.create_header()
+        main_layout.addWidget(header)
+        
+        # Main content
+        content_layout = QHBoxLayout()
+        
+        # Chat area
+        self.chat_display = QTextEdit()
+        self.chat_display.setReadOnly(True)
+        self.chat_display.setFont(QFont("Monospace", 10))
+        content_layout.addWidget(self.chat_display, 1)
+        
+        # Info panel (sidebar)
+        info_panel = self.create_info_panel()
+        content_layout.addWidget(info_panel, 0)
+        
+        main_layout.addLayout(content_layout, 1)
+        
+        # Input area
+        input_area = self.create_input_area()
+        main_layout.addWidget(input_area)
+        
+        # Status bar
+        self.status_bar = QStatusBar()
+        self.setStatusBar(self.status_bar)
+        self.status_bar.showMessage("Ready to connect...")
+        
+        central_widget.setLayout(main_layout)
+    
+    def create_header(self) -> QFrame:
+        """Create header with connection controls"""
+        header = QFrame()
+        header.setFrameShape(QFrame.StyledPanel)
+        header_layout = QHBoxLayout()
+        
+        title = QLabel("LibreSilent")
+        title_font = QFont()
+        title_font.setPointSize(18)
+        title_font.setBold(True)
+        title.setFont(title_font)
+        header_layout.addWidget(title)
+        
+        header_layout.addStretch()
+        
+        # Connection status indicator
+        self.status_indicator = QLabel("●")
+        self.status_indicator.setStyleSheet("color: red; font-size: 16px;")
+        header_layout.addWidget(self.status_indicator)
+        
+        self.status_label = QLabel("Disconnected")
+        header_layout.addWidget(self.status_label)
+        
+        header_layout.addSpacing(20)
+        
+        # Connect button
+        self.connect_button = QPushButton("Connect")
+        self.connect_button.clicked.connect(self.show_connection_dialog)
+        header_layout.addWidget(self.connect_button)
+        
+        # Disconnect button
+        self.disconnect_button = QPushButton("Disconnect")
+        self.disconnect_button.setEnabled(False)
+        self.disconnect_button.clicked.connect(self.disconnect)
+        header_layout.addWidget(self.disconnect_button)
+        
+        header.setLayout(header_layout)
+        return header
+    
+    def create_input_area(self) -> QFrame:
+        """Create message input area"""
+        input_frame = QFrame()
+        input_frame.setFrameShape(QFrame.StyledPanel)
+        input_layout = QHBoxLayout()
+        
+        self.message_input = QLineEdit()
+        self.message_input.setPlaceholderText("Type your message here... (disabled until connected)")
+        self.message_input.setEnabled(False)
+        self.message_input.returnPressed.connect(self.send_message)
+        input_layout.addWidget(self.message_input)
+        
+        self.send_button = QPushButton("Send")
+        self.send_button.setEnabled(False)
+        self.send_button.clicked.connect(self.send_message)
+        self.send_button.setMaximumWidth(100)
+        input_layout.addWidget(self.send_button)
+        
+        input_frame.setLayout(input_layout)
+        return input_frame
+    
+    def create_info_panel(self) -> QFrame:
+        """Create info panel sidebar"""
+        panel = QFrame()
+        panel.setFrameShape(QFrame.StyledPanel)
+        panel.setMaximumWidth(250)
+        panel_layout = QVBoxLayout()
+        
+        # Title
+        title = QLabel("Connection Info")
+        title_font = QFont()
+        title_font.setBold(True)
+        title.setFont(title_font)
+        panel_layout.addWidget(title)
+        
+        # Info labels
+        panel_layout.addWidget(QLabel("Server:"))
+        self.info_server = QLabel("—")
+        panel_layout.addWidget(self.info_server)
+        
+        panel_layout.addWidget(QLabel("Channel:"))
+        self.info_channel = QLabel("—")
+        panel_layout.addWidget(self.info_channel)
+        
+        panel_layout.addWidget(QLabel("Nickname:"))
+        self.info_nick = QLabel("—")
+        panel_layout.addWidget(self.info_nick)
+        
+        panel_layout.addSpacing(20)
+        
+        # Security options
+        security_title = QLabel("Security Options")
+        security_title.setFont(title_font)
+        panel_layout.addWidget(security_title)
+        
+        self.encrypt_names_toggle = QCheckBox("Encrypt Names")
+        self.encrypt_names_toggle.setEnabled(False)
+        panel_layout.addWidget(self.encrypt_names_toggle)
+        
+        self.double_encrypt_toggle = QCheckBox("Double Encryption")
+        self.double_encrypt_toggle.setEnabled(False)
+        panel_layout.addWidget(self.double_encrypt_toggle)
+        
+        self.rotation_toggle = QCheckBox("Code Rotation")
+        self.rotation_toggle.setEnabled(False)
+        panel_layout.addWidget(self.rotation_toggle)
+        
+        self.tor_toggle = QCheckBox("TOR Routing")
+        self.tor_toggle.setEnabled(False)
+        panel_layout.addWidget(self.tor_toggle)
+        
+        panel_layout.addSpacing(20)
+        
+        # Theme selector
+        theme_title = QLabel("Theme")
+        theme_title.setFont(title_font)
+        panel_layout.addWidget(theme_title)
+        
+        self.theme_combo = QComboBox()
+        self.theme_combo.addItems(["System Default", "Light", "Dark"])
+        self.theme_combo.currentTextChanged.connect(self.on_theme_changed)
+        panel_layout.addWidget(self.theme_combo)
+        
+        panel_layout.addStretch()
+        
+        # Settings button
+        settings_button = QPushButton("Settings")
+        settings_button.clicked.connect(self.show_settings)
+        panel_layout.addWidget(settings_button)
+        
+        panel.setLayout(panel_layout)
+        return panel
+    
+    def show_connection_dialog(self):
+        """Show connection settings dialog"""
+        dialog = ConnectionSettingsDialog(self, self.theme)
+        if dialog.exec_() == QDialog.Accepted:
+            self.settings = dialog.get_settings()
+            self.connect_to_irc()
+    
+    def connect_to_irc(self):
+        """Connect to IRC server"""
         try:
-            port = int(self.port_entry.get())
-        except ValueError:
-            messagebox.showerror("Error", "Port must be an integer.")
-            return
-
-        self.nick = self.nick_entry.get()
-
-        if not all([server, port, self.nick]):
-            messagebox.showerror("Error", "All fields except channel are required.")
-            return
-
-                                          
-        password = simpledialog.askstring("Secret Key", "Enter your shared secret password:", show='*')
-        if not password:
-            self.display_message_system("Connection cancelled. No key provided.")
-            return
-
-                                                         
-        if self.use_rotation:
-            rotation_key = simpledialog.askstring("Rotation Key", 
-                "Enter your secondary rotation key:", show='*')
-            if not rotation_key:
-                self.display_message_system("Connection cancelled. No rotation key provided.")
+            server = self.settings['server']
+            port = self.settings['port']
+            nick = self.settings['nick']
+            key = self.settings['key']
+            
+            if not all([server, port, nick, key]):
+                QMessageBox.critical(self, "Error", "All connection fields are required.")
                 return
-            self.rotation_key = rotation_key
-            self.display_message_system("Code rotation active - keys will rotate daily")
-        
-        self.encryption_key = derive_key(password, self.rotation_key, self.use_rotation)
-        
-        if self.using_custom_channel:
-            self.channel = self.channel_entry.get()
-            if not self.channel:
-                messagebox.showerror("Error", "Custom channel name is required.")
-                return
-            if not self.channel.startswith('#'):
-                self.channel = f"#{self.channel}"
-        else:
-                                                       
-            channel_hash = hashlib.sha256(self.encryption_key).hexdigest()[:8]
-            self.channel = f"#ls{channel_hash}"                                 
-            self.channel_entry.config(state='normal')
-            self.channel_entry.delete(0, tk.END)
-            self.channel_entry.insert(0, self.channel)
-            self.channel_entry.config(state='disabled')
-        
-        self.display_message_system(f"Key derived. Using channel {self.channel}")
-        self.display_message_system(f"Connecting to {server}...")
-
-                          
-        self.server_entry.config(state='disabled')
-        self.port_entry.config(state='disabled')
-        self.nick_entry.config(state='disabled')
-        self.channel_entry.config(state='disabled')
-        self.connect_button.config(text="Connecting...", state='disabled')
-
-                              
-        self.irc_thread = IRCHandler(server, port, self.nick, self.channel, self.gui_queue, 
-                                   use_tor=self.use_tor, tor_port=self.tor_port)
-        self.irc_thread.start()
-
-        if self.use_tor:
-            self.display_message_system("Connecting through TOR network...")
-        
-                                                   
-        self.root.after(100, self.check_queue)
-
+            
+            self.nick = nick
+            self.encryption_key = derive_key(
+                key,
+                self.settings.get('rotation_key'),
+                self.settings.get('use_rotation', False)
+            )
+            
+            if self.settings['auto_channel']:
+                channel_hash = hashlib.sha256(self.encryption_key).hexdigest()[:8]
+                self.channel = f"#ls{channel_hash}"
+            else:
+                self.channel = self.settings['channel']
+                if not self.channel.startswith('#'):
+                    self.channel = f"#{self.channel}"
+            
+            # Update UI
+            self.connect_button.setEnabled(False)
+            self.disconnect_button.setEnabled(True)
+            self.status_label.setText("Connecting...")
+            self.status_indicator.setStyleSheet("color: orange; font-size: 16px;")
+            self.status_bar.showMessage(f"Connecting to {server}:{port}...")
+            
+            # Update info panel
+            self.info_server.setText(f"{server}:{port}")
+            self.info_channel.setText(self.channel)
+            self.info_nick.setText(nick)
+            
+            # Update toggles
+            self.encrypt_names_toggle.setChecked(self.settings.get('encrypt_names', True))
+            self.double_encrypt_toggle.setChecked(self.settings.get('double_encrypt', False))
+            self.rotation_toggle.setChecked(self.settings.get('use_rotation', False))
+            self.tor_toggle.setChecked(self.settings.get('use_tor', False))
+            
+            # Start IRC thread
+            self.irc_thread = IRCHandler(
+                server, port, nick, self.channel,
+                use_tor=self.settings.get('use_tor', False),
+                tor_port=self.settings.get('tor_port', 9050)
+            )
+            self.irc_thread.message_received.connect(self.on_message_received)
+            self.irc_thread.system_message.connect(self.on_system_message)
+            self.irc_thread.system_error.connect(self.on_system_error)
+            self.irc_thread.connected.connect(self.on_connected)
+            self.irc_thread.start()
+            
+            self.add_system_message(f"Connecting to {server}:{port}...")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Connection error: {e}")
+            self.status_bar.showMessage("Connection failed")
+    
     def disconnect(self):
-        """stops irc thread and resets application"""
+        """Disconnect from IRC"""
         if self.irc_thread:
-            self.display_message_system("Sending QUIT command to server and disconnecting...")
             self.irc_thread.stop()
             self.irc_thread = None
-        self._reset_ui()
-        self.display_message_system("Disconnected.")
-
-    def check_queue(self):
-        """checks queue for messages from irc thread"""
-        while not self.gui_queue.empty():
-            sender, message = self.gui_queue.get_nowait()
-            self.handle_incoming(sender, message)
-
-        if self.irc_thread and not self.irc_thread.is_alive() and self.is_ready_to_send:
-            self.gui_queue.put(('SYSTEM_ERROR', "Connection thread unexpectedly terminated."))
-
-        self.root.after(100, self.check_queue)
-
-    def handle_incoming(self, sender, message):
-        """decrypts and displays incoming message, handles system errors"""
-        if sender == 'SYSTEM_ERROR':
-            self.display_message_error(message)
-            self._reset_ui()
+        
+        self.is_ready_to_send = False
+        self.connect_button.setEnabled(True)
+        self.disconnect_button.setEnabled(False)
+        self.message_input.setEnabled(False)
+        self.send_button.setEnabled(False)
+        
+        self.status_indicator.setStyleSheet("color: red; font-size: 16px;")
+        self.status_label.setText("Disconnected")
+        self.status_bar.showMessage("Disconnected")
+        
+        self.add_system_message("Disconnected from server")
+    
+    def send_message(self):
+        """Send encrypted message"""
+        if not self.is_ready_to_send or not self.irc_thread:
             return
-        elif sender == 'SYSTEM_MESSAGE':
-            self.display_message_system(message)
-            if "Successfully joined" in message:
-                self.is_ready_to_send = True
-                self.message_entry.config(state='normal')
-                self.connect_button.config(text="Disconnect", bg="salmon", state='normal', command=self.disconnect)
+        
+        message = self.message_input.text().strip()
+        if not message:
             return
-
+        
+        if self.settings.get('double_encrypt'):
+            encrypted = encrypt_message_double(message, self.encryption_key)
+        else:
+            encrypted = encrypt_message(message, self.encryption_key)
+        
+        self.irc_thread.send_privmsg(encrypted)
+        
+        # Display own message
+        self.add_message(self.nick, message)
+        self.message_input.clear()
+    
+    def on_message_received(self, sender, message):
+        """Handle incoming message from IRC"""
         decrypted = decrypt_message(message, self.encryption_key)
+        if not decrypted and self.settings.get('double_encrypt'):
+            decrypted = decrypt_message_double(message, self.encryption_key)
         
         displayed_sender = sender
-        if self.encrypt_names and sender != self.nick:
+        if self.settings.get('encrypt_names') and sender != self.nick:
             try:
                 decrypted_sender = decrypt_message(sender, self.encryption_key)
+                if not decrypted_sender and self.settings.get('double_encrypt'):
+                    decrypted_sender = decrypt_message_double(sender, self.encryption_key)
                 if decrypted_sender:
                     displayed_sender = decrypted_sender
-            except Exception:
+            except:
                 pass
-
+        
         if decrypted:
-            display = f"<{displayed_sender}> {decrypted}"
-            self.display_message(display)
-
+            self.add_message(displayed_sender, decrypted)
             self.show_notification("New Message", f"Message from {displayed_sender}")
-
-            self.root.title(f"** NEW MESSAGE ** - {self.original_title}")
-
         else:
-            self.display_message_system(f"<{sender}> [Unencrypted or corrupt message]")
-
-    def send_message_event(self, event=None):
-        """handles send button click or enter key press"""
-        message = self.message_entry.get()
-
-        if self.root.title().startswith("** NEW MESSAGE **"):
-            self.root.title(self.original_title)
-
-        if message and self.irc_thread and self.encryption_key and self.is_ready_to_send:
-            encrypted_message = encrypt_message(message, self.encryption_key)
-            self.irc_thread.send_privmsg(encrypted_message)
-
-            if self.encrypt_names:
-                encrypted_nick = encrypt_message(self.nick, self.encryption_key)
-                self.irc_thread.nick = encrypted_nick
-                
-            self.display_message(f"<{self.nick}> {message}")
-
-            self.message_entry.delete(0, tk.END)
-        elif message and not self.is_ready_to_send:
-             self.display_message_system("Please wait for the channel join message before sending.")
-
-
-    def display_message(self, message):
-        """inserts message into chat window"""
-        self.chat_window.config(state='normal')
-        self.chat_window.insert(tk.END, message + "\n")
-        self.chat_window.config(state='disabled')
-        self.chat_window.yview(tk.END)
-
-    def display_message_system(self, message):
-        """displays system message in themed color"""
-        self.chat_window.config(state='normal')
-        self.chat_window.tag_configure("system", foreground=self.colors['system_fg'], font=("Arial", 10, "italic"))
-        self.chat_window.insert(tk.END, message + "\n", "system")
-        self.chat_window.config(state='disabled')
-        self.chat_window.yview(tk.END)
-
-    def display_message_error(self, message):
-        """displays critical error message in special format"""
-        self.chat_window.config(state='normal')
-        self.chat_window.tag_configure("error", foreground=self.colors['error_fg'], font=("Arial", 10, "bold"))
-        self.chat_window.insert(tk.END, "--- CRITICAL ERROR ---\n", "error")
-        self.chat_window.insert(tk.END, message + "\n", "error")
-        self.chat_window.insert(tk.END, "----------------------\n", "error")
-        self.chat_window.config(state='disabled')
-        self.chat_window.yview(tk.END)
-
+            self.add_system_message(f"<{sender}> [Unencrypted or corrupt message]")
+    
+    def on_system_message(self, message):
+        """Handle system message from IRC"""
+        self.add_system_message(message)
+    
+    def on_system_error(self, error):
+        """Handle system error from IRC"""
+        self.add_error_message(error)
+        self.disconnect()
+    
+    def on_connected(self):
+        """Handle successful channel join"""
+        self.add_system_message(f"Successfully joined {self.channel}")
+        self.is_ready_to_send = True
+        self.message_input.setEnabled(True)
+        self.send_button.setEnabled(True)
+        
+        self.status_indicator.setStyleSheet("color: green; font-size: 16px;")
+        self.status_label.setText("Connected")
+        self.status_bar.showMessage(f"Connected to {self.channel}")
+        
+        # Auto-save settings if enabled
+        if self.auto_save_enabled:
+            self.auto_save_connection()
+    
+    def add_message(self, sender, message):
+        """Add chat message to display"""
+        cursor = self.chat_display.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        
+        # Add timestamp if enabled
+        if self.show_timestamps:
+            timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+            format = cursor.charFormat()
+            format.setForeground(QColor("#666666" if self.theme == "dark" else "#999999"))
+            format.setFontItalic(True)
+            cursor.setCharFormat(format)
+            cursor.insertText(f"[{timestamp}] ")
+        
+        format = cursor.charFormat()
+        format.setForeground(QColor("#0d47a1" if self.theme == "dark" else "#2196F3"))
+        format.setFontWeight(QFont.Bold)
+        format.setFontItalic(False)
+        
+        cursor.setCharFormat(format)
+        cursor.insertText(f"{sender}: ")
+        
+        format.setForeground(QColor("#ffffff" if self.theme == "dark" else "#000000"))
+        format.setFontWeight(QFont.Normal)
+        cursor.setCharFormat(format)
+        cursor.insertText(f"{message}\n")
+        
+        self.chat_display.setTextCursor(cursor)
+    
+    def add_system_message(self, message):
+        """Add system message to display"""
+        cursor = self.chat_display.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        
+        format = cursor.charFormat()
+        format.setForeground(QColor("#666666" if self.theme == "dark" else "#999999"))
+        format.setFontItalic(True)
+        
+        cursor.setCharFormat(format)
+        cursor.insertText(f"[SYSTEM] {message}\n")
+        
+        self.chat_display.setTextCursor(cursor)
+    
+    def add_error_message(self, message):
+        """Add error message to display"""
+        cursor = self.chat_display.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        
+        format = cursor.charFormat()
+        format.setForeground(QColor("#ff6b6b" if self.theme == "dark" else "#f44336"))
+        format.setFontWeight(QFont.Bold)
+        
+        cursor.setCharFormat(format)
+        cursor.insertText(f"[ERROR] {message}\n")
+        
+        self.chat_display.setTextCursor(cursor)
+    
     def show_notification(self, title, message):
-        """shows system notification"""
-        if not HAS_NOTIFICATIONS:
+        """Show system notification"""
+        if not self.notifications_enabled or not HAS_NOTIFICATIONS:
             return
-            
+        
         try:
             if platform.system() == "Linux":
                 notification = notify2.Notification(title, message)
@@ -1471,113 +1458,75 @@ NOTES:
                 os.system(f"""osascript -e 'display notification "{message}" with title "{title}"'""")
             elif platform.system() == "Windows":
                 self.toaster.show_toast(title, message, duration=5, threaded=True)
-        except Exception as e:
-            print(f"failed to show notification: {e}")
-
-    def check_tor_connection(self):
-        """checks if tor is running and accessible"""
+        except:
+            pass
+    
+    def on_theme_changed(self, theme_name):
+        """Handle theme change"""
+        if theme_name == "Light":
+            self.theme = "light"
+        elif theme_name == "Dark":
+            self.theme = "dark"
+        else:
+            self.theme = ThemeManager.detect_system_theme()
+        
+        self.apply_theme()
+    
+    def apply_theme(self):
+        """Apply theme to application"""
+        stylesheet = ThemeManager.get_stylesheet(self.theme)
+        self.setStyleSheet(stylesheet)
+    
+    def show_settings(self):
+        """Show settings dialog"""
+        dialog = SettingsDialog(self, self.theme)
+        
+        # Sync current preferences to dialog
+        dialog.show_timestamps_check.setChecked(self.show_timestamps)
+        dialog.enable_notifications_check.setChecked(self.notifications_enabled)
+        dialog.auto_save_settings_check.setChecked(self.auto_save_enabled)
+        
+        if dialog.exec_() == QDialog.Accepted:
+            # Apply preferences from dialog
+            self.show_timestamps = dialog.show_timestamps_check.isChecked()
+            self.notifications_enabled = dialog.enable_notifications_check.isChecked()
+            self.auto_save_enabled = dialog.auto_save_settings_check.isChecked()
+    
+    def auto_save_connection(self):
+        """Auto-save current connection settings"""
         try:
-            sock = socks.socksocket()
-            sock.set_proxy(socks.SOCKS5, "127.0.0.1", self.tor_port)
-            sock.settimeout(5)
-            sock.connect(("check.torproject.org", 443))
-            sock.close()
-            return True
-        except Exception:
-            return False
-
-    def toggle_tor(self):
-        """toggles tor network usage"""
-        if not self.use_tor:
-            if self.check_tor_connection():
-                self.use_tor = True
-                self.tor_button.config(relief=tk.SUNKEN)
-                self.display_message_system("TOR routing enabled")
-            else:
-                messagebox.showerror("Error", 
-                    "Could not connect to TOR. Make sure TOR is running and listening on port 9050.")
-        else:
-            self.use_tor = False
-            self.tor_button.config(relief=tk.RAISED)
-            self.display_message_system("TOR routing disabled")
-
-    def toggle_name_encryption(self):
-        """toggles encryption of usernames"""
-        self.encrypt_names = not self.encrypt_names
-        if self.encrypt_names:
-            self.encrypt_names_button.config(relief=tk.SUNKEN)
-            self.display_message_system("Name encryption enabled")
-        else:
-            self.encrypt_names_button.config(relief=tk.RAISED)
-            self.display_message_system("Name encryption disabled")
+            SettingsManager.ensure_config_dir()
+            # Use server name as default save name
+            server_name = self.settings.get('server', 'connection').replace('.', '-')
+            filepath = os.path.join(SettingsManager.CONFIG_DIR, f"auto_{server_name}.json")
             
-    def toggle_rotation(self):
-        """toggles daily code rotation feature"""
-        self.use_rotation = not self.use_rotation
-        if self.use_rotation:
-            self.rotation_button.config(relief=tk.SUNKEN)
-            self.display_message_system("Daily code rotation enabled")
-        else:
-            self.rotation_button.config(relief=tk.RAISED)
-            self.display_message_system("Daily code rotation disabled")
-
-    def toggle_custom_channel(self):
-        """toggles between custom and auto-generated channel"""
-        if self.using_custom_channel:
-            self.channel_entry.config(state='disabled')
-            self.custom_channel_button.config(relief=tk.RAISED)
-            self.using_custom_channel = False
-            self.channel_entry.delete(0, tk.END)
-        else:
-            self.channel_entry.config(state='normal')
-            self.custom_channel_button.config(relief=tk.SUNKEN)
-            self.using_custom_channel = True
-
-    def _reset_ui(self):
-        """resets ui elements and state variables after disconnection or error"""
-        self.server_entry.config(state='normal')
-        self.port_entry.config(state='normal')
-        self.nick_entry.config(state='normal')
-        if not self.using_custom_channel:
-            self.channel_entry.config(state='disabled')
-
-        self.connect_button.config(text="Connect", state='normal', bg=self.colors['button_bg'], command=self.connect)
-
-        self.irc_thread = None
-        self.encryption_key = None
-        self.is_ready_to_send = False
-        self.message_entry.config(state='disabled')
-        self.root.title(self.original_title)
-
-    def on_closing(self):
-        """stops irc thread and closes application"""
+            # Use a default password for auto-saved connections
+            password = hashlib.sha256(self.settings.get('key', '').encode()).hexdigest()[:16]
+            
+            if SettingsManager.save_settings(self.settings, password, filepath):
+                self.add_system_message("✓ Connection auto-saved")
+            else:
+                self.add_system_message("⚠ Failed to auto-save connection")
+        except Exception as e:
+            print(f"Error auto-saving connection: {e}")
+    
+    def closeEvent(self, event):
+        """Handle application close"""
         if self.irc_thread:
             self.irc_thread.stop()
-        self.root.destroy()
+        event.accept()
 
-                        
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="LibreSilent - Encrypted IRC Client",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  python main.py              # Launch GUI mode (default)
-  python main.py -nogui       # Launch terminal-based UI mode
-  python main.py --help       # Show this help message
-        """
-    )
-    parser.add_argument('-nogui', '--no-gui', action='store_true', dest='no_gui',
-                       help='Run in terminal mode without GUI')
-    
-    args = parser.parse_args()
-    
-    if args.no_gui:
-        # Terminal UI mode
-        terminal_app = TerminalUIHandler()
-        terminal_app.connect()
-    else:
-        # GUI mode
-        root = tk.Tk()
-        app = EncryptedIRCClient(root)
-        root.mainloop()
+
+# ============================================================================
+# MAIN ENTRY POINT
+# ============================================================================
+
+def main():
+    app = QApplication(sys.argv)
+    window = LibreSilentQt()
+    window.show()
+    sys.exit(app.exec_())
+
+
+if __name__ == '__main__':
+    main()
