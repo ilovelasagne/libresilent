@@ -1477,6 +1477,10 @@ class FriendsDialog(QDialog):
         
         # Update your activity display after UI is initialized
         self.refresh_your_activity()
+
+    def update_activity_display(self, activity):
+        self.profile['current_activity'] = activity
+        self.refresh_your_activity()
     
     def generate_friend_code(self):
         """Generate a new friend code"""
@@ -2145,6 +2149,7 @@ class SettingsDialog(QDialog):
 
 class LibreSilentQt(QMainWindow):
     """Main application window for LibreSilent using Qt"""
+    activity_changed = pyqtSignal(dict)
     
     def __init__(self):
         super().__init__()
@@ -2860,6 +2865,8 @@ class LibreSilentQt(QMainWindow):
             return
         
         dialog = FriendsDialog(self, self.theme)
+        self.activity_changed.connect(dialog.update_activity_display)
+        dialog.finished.connect(lambda: self.activity_changed.disconnect(dialog.update_activity_display))
         dialog.exec_()
     
     def show_settings(self):
@@ -2933,6 +2940,8 @@ class LibreSilentQt(QMainWindow):
             profile['current_activity'] = activity
             profile['activity_timestamp'] = datetime.datetime.now().isoformat()
             SettingsManager.save_profile(profile)
+
+            self.activity_changed.emit(activity)
             
             # Optionally broadcast to friends (would require IRC/chat implementation)
             activity_str = f"{activity.get('source', 'Unknown')}: {activity.get('title', 'N/A')}"
@@ -2950,6 +2959,7 @@ class LibreSilentQt(QMainWindow):
             profile = SettingsManager.load_profile()
             profile['current_activity'] = None
             SettingsManager.save_profile(profile)
+            self.activity_changed.emit({})
             
             print("Activity cleared")
         except Exception as e:
